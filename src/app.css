@@ -1,0 +1,81 @@
+/* e-ink greys, ink for actions, highlighter yellow only on highlighted text */
+:root {
+  --paper: #F4F4F0;
+  --sheet: #FFFFFF;
+  --ink: #1B1B19;
+  --ink-2: #5E5E58;
+  --rule: #E2E2DC;
+  --mark: #F7E27A;
+  --ok: #2F7D4F;
+  --warn: #9A5B00;
+  --bad: #B3261E;
+  --sans: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --serif: ui-serif, "New York", Georgia, serif;
+  --mono: ui-monospace, "SF Mono", Menlo, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #191917; --sheet: #22221F; --ink: #ECECE6; --ink-2: #A2A29A;
+    --rule: #33332F; --mark: #6B5D12; --ok: #6FC48F; --warn: #E0A64A; --bad: #F2867E;
+    color-scheme: dark;
+  }
+}
+
+* { box-sizing: border-box }
+html, body, #app { height: 100%; margin: 0; overflow: hidden }
+body { background: var(--paper); color: var(--ink); font: 13px/1.45 var(--sans); -webkit-font-smoothing: antialiased; user-select: none; cursor: default }
+input, textarea, .selectable { user-select: text }
+code { font: 12px var(--mono) }
+.num { font-variant-numeric: tabular-nums }
+
+h1 { font: 600 22px/1.15 var(--serif); margin: 0 }
+.sub { color: var(--ink-2); margin: 4px 0 0 }
+.label { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-2); margin: 0 }
+.head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap }
+.row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center }
+.stack { display: flex; flex-direction: column; gap: 20px; min-width: 0 }
+
+.btn { appearance: none; font: 500 13px/1 var(--sans); border-radius: 7px; padding: 9px 14px; border: 1px solid var(--ink); background: var(--ink); color: var(--sheet); white-space: nowrap }
+.btn.ghost { background: transparent; color: var(--ink); border-color: var(--rule) }
+.btn.ghost:hover:not(:disabled) { border-color: var(--ink-2) }
+.btn.danger { background: transparent; color: var(--bad); border-color: currentColor }
+.btn:disabled { opacity: .45 }
+.btn:focus-visible, .tog:focus-visible, button:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px }
+.link { appearance: none; border: 0; background: none; color: var(--ink); text-decoration: underline; text-underline-offset: 2px; font: inherit; padding: 0 }
+
+.list { border: 1px solid var(--rule); border-radius: 8px; overflow: hidden }
+.item { display: flex; align-items: center; gap: 12px; padding: 11px 14px; border-bottom: 1px solid var(--rule); min-width: 0 }
+.item:last-child { border-bottom: 0 }
+.grow { flex: 1; min-width: 0 }
+.ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.pill { font-size: 11px; padding: 3px 8px; border-radius: 99px; border: 1px solid var(--rule); color: var(--ink-2); white-space: nowrap }
+.pill.ok { color: var(--ok); border-color: currentColor }
+.pill.warn { color: var(--warn); border-color: currentColor }
+.pill.bad { color: var(--bad); border-color: currentColor }
+
+.tog { appearance: none; width: 30px; height: 18px; border-radius: 99px; background: var(--rule); position: relative; flex: none; margin: 0 }
+.tog::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: var(--sheet); transition: transform .15s }
+.tog:checked { background: var(--ink) }
+.tog:checked::after { transform: translateX(12px) }
+
+.banner { display: flex; gap: 10px; align-items: center; justify-content: space-between; padding: 10px 14px; border-radius: 8px; border: 1px solid currentColor; font-size: 12.5px; flex-wrap: wrap }
+.banner.warn { color: var(--warn) }
+.banner.bad { color: var(--bad) }
+.banner.ok { color: var(--ok) }
+.empty { color: var(--ink-2); padding: 28px; text-align: center; border: 1px dashed var(--rule); border-radius: 8px }
+
+.editor { border: 1px solid var(--rule); border-radius: 8px; overflow: hidden; display: flex; flex-direction: column; min-width: 0; min-height: 0 }
+.editor .bar { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--rule); background: var(--paper); flex-wrap: wrap }
+.editor textarea { flex: 1; min-height: 320px; border: 0; resize: none; padding: 14px; font: 12px/1.6 var(--mono); color: var(--ink); background: var(--sheet); outline: none; tab-size: 4 }
+.editor textarea[readonly] { color: var(--ink-2) }
+
+.field { display: flex; gap: 8px }
+.field input { flex: 1; min-width: 0; font: inherit; padding: 9px 12px; border-radius: 7px; border: 1px solid var(--rule); background: var(--sheet); color: var(--ink); outline: none }
+.field input:focus { border-color: var(--ink-2) }
+
+.drop { border: 1.5px dashed var(--ink-2); border-radius: 10px; padding: 32px 20px; text-align: center; display: grid; gap: 8px; justify-items: center; color: var(--ink-2); transition: background .15s }
+.drop.over { background: var(--paper); border-color: var(--ink) }
+.drop strong { color: var(--ink); font-weight: 600; font-size: 14px }
+
+@media (prefers-reduced-motion: reduce) { * { transition: none !important } }

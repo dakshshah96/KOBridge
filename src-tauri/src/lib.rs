@@ -1,0 +1,468 @@
+mod highlights;
+mod lua;
+mod ssh;
+mod stats;
+
+use serde::{Deserialize, Serialize};
+use ssh::{sq, Res};
+use std::path::{Path, PathBuf};
+use tauri::ipc::Channel;
+use tauri::{AppHandle, Manager, State};
+use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::sync::Mutex;
+
+const KO: &str = "/mnt/us/koreader";
+const BOOKS: &str = "/mnt/us/books";
+const FONTS: &str = "/mnt/us/fonts";
+
+fn e<E: ToString>(err: E) -> String { err.to_string() }
+
+fn home() -> PathBuf { PathBuf::from(std::env::var("HOME").unwrap_or_default()) }
+
+// ---------- app settings (JSON in the app config dir) ----------
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(default)]
+struct Settings {
+    backup_dir: String,
+    vault_dir: String,
+    backup_books: bool,
+    auto_backup: bool,
+    last_auto_backup: String,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Settings {
+            backup_dir: home().join("Backups/kindle").to_string_lossy().into(),
+            vault_dir: home().join("Documents/Obsidian Vault/KOReader").to_string_lossy().into(),
+            backup_books: false,
+            auto_backup: true,
+            last_auto_backup: String::new(),
+        }
+    }
+}
+
+fn settings_path(app: &AppHandle) -> Res<PathBuf> {
+    Ok(app.path().app_config_dir().map_err(e)?.join("settings.json"))
+}
+
+#[tauri::command]
+fn get_settings(app: AppHandle) -> Settings {
+    settings_path(&app).ok()
+        .and_then(|p| std::fs::read(p).ok())
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
+}
+
+#[tauri::command]
+fn set_settings(app: AppHandle, settings: Settings) -> Res<()> {
+    let p = settings_path(&app)?;
+    std::fs::create_dir_all(p.parent().unwrap()).map_err(e)?;
+    std::fs::write(p, serde_json::to_vec_pretty(&settings).map_err(e)?).map_err(e)
+}
+
+// ---------- connection ----------
+
+#[derive(Serialize)]
+struct Status {
+    host: String,
+    battery: Option<u8>,
+    free_kb: u64,
+    total_kb: u64,
+    reader_running: bool,
+}
+
+#[tauri::command]
+async fn status() -> Res<Status> {
+    let out = ssh::run(
+        "cat /sys/class/power_supply/*bat*/capacity 2>/dev/null | head -n1; echo; \
+         df -k /mnt/us | tail -n1; ps | grep -q '[r]eader.lua' && echo up || echo down",
+    ).await?;
+    let lines: Vec<&str> = out.lines().filter(|l| !l.trim().is_empty()).collect();
+    let battery = lines.first().and_then(|l| l.trim().parse().ok());
+    let df = lines.iter().find(|l| l.ends_with("/mnt/us")).map(|l| l.split_whitespace().collect::<Vec<_>>()).unwrap_or_default();
+    let n = |i: usize| df.get(i).and_then(|v| v.parse().ok()).unwrap_or(0);
+    Ok(Status {
+        host: ssh::resolved_host().await.unwrap_or_default(),
+        battery,
+        total_kb: n(1),
+        free_kb: n(3),
+        reader_running: lines.last() == Some(&"up"),
+    })
+}
+
+// ---------- 1. backup ----------
+
+#[derive(Serialize)]
+struct BackupFile { name: String, path: String, size: u64, modified: u64 }
+
+#[tauri::command]
+async fn backup_run(app: AppHandle, stamp: String, progress: Channel<u64>) -> Res<BackupFile> {
+    if !stamp.chars().all(|c| c.is_ascii_digit() || c == '-') { return Err("stamp inválido".into()); }
+    let s = get_settings(app);
+    let dir = PathBuf::from(&s.backup_dir);
+    std::fs::create_dir_all(&dir).map_err(e)?;
+    let cmd = format!("{} && tar -cf - -T /tmp/kob-list; r=$?; rm -f /tmp/kob-list; exit $r", backup_list_cmd(s.backup_books));
+    let dest = dir.join(format!("kindle-{stamp}.tar"));
+    ssh::pull_to_file(&cmd, &dest, |n| { let _ = progress.send(n); }).await?;
+    Ok(file_info(&dest).ok_or("no se pudo leer el respaldo")?)
+}
+
+/// Shell that writes the backup's path list to /tmp/kob-list, run from /mnt/us.
+fn backup_list_cmd(books: bool) -> String {
+    let (sdr_roots, extra) = if books { ("documents", "books") } else { ("books documents", "") };
+    format!(
+        "cd /mnt/us && {{ for p in koreader/settings koreader/settings.reader.lua koreader/history.lua \
+         koreader/defaults.custom.lua koreader/patches koreader/styletweaks {extra}; do [ -e \"$p\" ] && echo \"$p\"; done; \
+         find {sdr_roots} -type d -name '*.sdr' ! -path '*/dictionaries/*' 2>/dev/null; }} > /tmp/kob-list")
+}
+
+#[derive(Serialize)]
+struct BackupSize { books_bytes: u64, books_files: u64, base_bytes: u64, full_bytes: u64, bytes_per_sec: f64 }
+
+/// Real sizes from `du -sk` on the Kindle plus a measured transfer speed (8 MB over the same ssh path).
+#[tauri::command]
+async fn backup_size() -> Res<BackupSize> {
+    let du = "tr '\\n' '\\000' < /tmp/kob-list | xargs -0 du -sk | awk '{s+=$1} END {print s+0}'";
+    let out = ssh::run(&format!(
+        "{base} && {du} && {full} && {du} && du -sk /mnt/us/books | cut -f1 && find /mnt/us/books -type f | wc -l; rm -f /tmp/kob-list",
+        base = backup_list_cmd(false), full = backup_list_cmd(true))).await?;
+    let n: Vec<u64> = out.split_whitespace().filter_map(|v| v.parse().ok()).collect();
+    let [base_kb, full_kb, books_kb, books_files] = n[..] else { return Err(format!("respuesta inesperada de du: {out}")) };
+
+    let probe = std::env::temp_dir().join("kob-speed.bin");
+    let t = std::time::Instant::now();
+    let bytes = ssh::pull_to_file("dd if=/dev/zero bs=65536 count=128 2>/dev/null", &probe, |_| {}).await?;
+    let secs = t.elapsed().as_secs_f64();
+    let _ = std::fs::remove_file(probe);
+    Ok(BackupSize {
+        books_bytes: books_kb * 1024, books_files, base_bytes: base_kb * 1024, full_bytes: full_kb * 1024,
+        bytes_per_sec: bytes as f64 / secs.max(0.001),
+    })
+}
+
+fn file_info(p: &Path) -> Option<BackupFile> {
+    let m = std::fs::metadata(p).ok()?;
+    Some(BackupFile {
+        name: p.file_name()?.to_string_lossy().into(),
+        path: p.to_string_lossy().into(),
+        size: m.len(),
+        modified: m.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs(),
+    })
+}
+
+#[tauri::command]
+fn backup_list(app: AppHandle) -> Vec<BackupFile> {
+    let dir = PathBuf::from(get_settings(app).backup_dir);
+    let mut v: Vec<BackupFile> = std::fs::read_dir(dir).into_iter().flatten().flatten()
+        .map(|d| d.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "tar"))
+        .filter_map(|p| file_info(&p))
+        .collect();
+    v.sort_by(|a, b| b.modified.cmp(&a.modified));
+    v
+}
+
+#[tauri::command]
+fn reveal(path: String) -> Res<()> {
+    std::process::Command::new("open").arg("-R").arg(path).spawn().map_err(e).map(|_| ())
+}
+
+// ---------- 2. reading stats ----------
+
+#[tauri::command]
+async fn stats(app: AppHandle, refresh: bool) -> Res<Option<stats::Stats>> {
+    let dir = app.path().app_cache_dir().map_err(e)?;
+    std::fs::create_dir_all(&dir).map_err(e)?;
+    let db = dir.join("statistics.sqlite3");
+    if refresh {
+        // .backup gives a consistent copy even while KOReader is writing
+        let cmd = format!("sqlite3 {KO}/settings/statistics.sqlite3 '.backup /tmp/kob-stats.db' && cat /tmp/kob-stats.db; r=$?; rm -f /tmp/kob-stats.db; exit $r");
+        ssh::pull_to_file(&cmd, &db, |_| {}).await?;
+    }
+    let Some(info) = file_info(&db) else { return Ok(None) };
+    tauri::async_runtime::spawn_blocking(move || stats::read(&db, info.modified as i64)).await.map_err(e)?.map(Some).map_err(e)
+}
+
+// ---------- 3. highlights ----------
+
+#[derive(Serialize, Deserialize, Default)]
+struct HighlightSet { books: Vec<highlights::Book>, errors: Vec<String>, fetched_at: u64 }
+
+#[tauri::command]
+async fn highlights(app: AppHandle, refresh: bool) -> Res<HighlightSet> {
+    let cache = app.path().app_cache_dir().map_err(e)?.join("highlights.json");
+    if !refresh {
+        return Ok(std::fs::read(&cache).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default());
+    }
+    let dump = ssh::run(highlights::FETCH_CMD).await?;
+    let (books, errors) = highlights::parse_dump(&dump);
+    let fetched_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(e)?.as_secs();
+    let set = HighlightSet { books, errors, fetched_at };
+    std::fs::create_dir_all(cache.parent().unwrap()).map_err(e)?;
+    std::fs::write(&cache, serde_json::to_vec(&set).map_err(e)?).map_err(e)?;
+    Ok(set)
+}
+
+#[tauri::command]
+fn highlights_export(app: AppHandle, books: Vec<highlights::Book>) -> Res<usize> {
+    let dir = PathBuf::from(get_settings(app).vault_dir);
+    std::fs::create_dir_all(&dir).map_err(e)?;
+    for b in &books {
+        std::fs::write(dir.join(highlights::file_name(&b.title)), highlights::markdown(b)).map_err(e)?;
+    }
+    Ok(books.len())
+}
+
+#[tauri::command]
+fn highlight_markdown(book: highlights::Book) -> String { highlights::markdown(&book) }
+
+// ---------- 4 & 8. send books / fonts ----------
+
+fn remote_dir(kind: &str) -> Res<&'static str> {
+    match kind {
+        "books" => Ok(BOOKS),
+        "fonts" => Ok(FONTS),
+        "patches" => Ok("/mnt/us/koreader/patches"),
+        _ => Err(format!("destino desconocido: {kind}")),
+    }
+}
+
+#[tauri::command]
+async fn send_file(path: String, kind: String) -> Res<String> {
+    ssh::upload(Path::new(&path), remote_dir(&kind)?).await
+}
+
+#[derive(Serialize)]
+struct Entry { name: String, size: u64 }
+
+#[tauri::command]
+async fn list_dir(kind: String) -> Res<Vec<Entry>> {
+    let dir = remote_dir(&kind)?;
+    let out = ssh::run(&format!(
+        "cd {} 2>/dev/null || exit 0; for f in *; do [ -f \"$f\" ] && echo \"$(wc -c < \"$f\") $f\"; done", sq(dir))).await?;
+    let mut v: Vec<Entry> = out.lines().filter_map(|l| {
+        let (size, name) = l.trim().split_once(' ')?;
+        Some(Entry { name: name.to_string(), size: size.parse().ok()? })
+    }).collect();
+    v.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    Ok(v)
+}
+
+// ---------- 5 & 6. remote text files (patches, settings) ----------
+
+/// Only files the app manages; never a path the UI could steer elsewhere.
+fn allowed(path: &str) -> Res<()> {
+    let ok_dir = |dir: &str| path.strip_prefix(dir).and_then(|r| r.strip_prefix('/'))
+        .is_some_and(|name| !name.is_empty() && !name.contains('/') && name != "." && name != "..");
+    let fixed = [format!("{KO}/defaults.custom.lua"), format!("{KO}/settings.reader.lua")];
+    if fixed.iter().any(|f| f == path) || ok_dir(&format!("{KO}/patches")) || ok_dir(FONTS) {
+        Ok(())
+    } else {
+        Err(format!("ruta no permitida: {path}"))
+    }
+}
+
+async fn reader_running() -> Res<bool> {
+    Ok(ssh::run("ps | grep -q '[r]eader.lua' && echo up || echo down").await?.trim() == "up")
+}
+
+#[tauri::command]
+async fn read_remote(path: String) -> Res<String> {
+    allowed(&path)?;
+    ssh::run(&format!("[ -f {p} ] && cat {p} || true", p = sq(&path))).await
+}
+
+#[tauri::command]
+async fn write_remote(path: String, content: String) -> Res<()> {
+    allowed(&path)?;
+    if path.ends_with("settings.reader.lua") && reader_running().await? {
+        return Err("KOReader está abierto y sobrescribiría este archivo al cerrar. Cerralo en la Kindle y volvé a guardar.".into());
+    }
+    let p = sq(&path);
+    ssh::run_with_input(&format!("[ -f {p} ] && cp {p} {p}.kob.bak; cat > {p}.kob-part && mv {p}.kob-part {p}"), content.as_bytes()).await
+}
+
+#[tauri::command]
+async fn rename_remote(from: String, to: String) -> Res<()> {
+    allowed(&from)?;
+    allowed(&to)?;
+    ssh::run(&format!("mv {} {}", sq(&from), sq(&to))).await.map(|_| ())
+}
+
+#[tauri::command]
+async fn delete_remote(path: String) -> Res<()> {
+    allowed(&path)?;
+    ssh::run(&format!("rm -f {}", sq(&path))).await.map(|_| ())
+}
+
+// ---------- 7. live log + screen message ----------
+
+#[derive(Default)]
+struct LogTail(Mutex<Option<tokio::process::Child>>);
+
+#[tauri::command]
+async fn log_start(tail: State<'_, LogTail>, lines: Channel<String>) -> Res<()> {
+    let mut slot = tail.0.lock().await;
+    if let Some(mut old) = slot.take() { let _ = old.kill().await; }
+    let mut child = ssh::stream(&format!("tail -n 200 -f {KO}/crash.log"))?;
+    let out = child.stdout.take().ok_or("sin salida")?;
+    *slot = Some(child);
+    tauri::async_runtime::spawn(async move {
+        let mut r = BufReader::new(out).lines();
+        while let Ok(Some(l)) = r.next_line().await {
+            if lines.send(l).is_err() { break; }
+        }
+    });
+    Ok(())
+}
+
+#[tauri::command]
+async fn log_stop(tail: State<'_, LogTail>) -> Res<()> {
+    if let Some(mut c) = tail.0.lock().await.take() { let _ = c.kill().await; }
+    Ok(())
+}
+
+#[tauri::command]
+async fn screen_message(text: String) -> Res<()> {
+    let text: String = text.chars().filter(|c| !c.is_control()).take(200).collect();
+    if text.trim().is_empty() { return Err("El mensaje está vacío".into()); }
+    ssh::run(&format!("{KO}/fbink -q -m -M -S 3 {}", sq(&text))).await.map(|_| ())
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
+        .manage(LogTail::default())
+        .invoke_handler(tauri::generate_handler![
+            get_settings, set_settings, status,
+            backup_run, backup_list, backup_size, reveal,
+            stats,
+            highlights, highlights_export, highlight_markdown,
+            send_file, list_dir,
+            read_remote, write_remote, rename_remote, delete_remote,
+            log_start, log_stop, screen_message,
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running KOBridge");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::allowed;
+
+    #[test]
+    fn only_managed_paths() {
+        assert!(allowed("/mnt/us/koreader/patches/2-x.lua").is_ok());
+        assert!(allowed("/mnt/us/koreader/settings.reader.lua").is_ok());
+        assert!(allowed("/mnt/us/fonts/Inter Bold.ttf").is_ok());
+        assert!(allowed("/mnt/us/koreader/patches/../reader.lua").is_err());
+        assert!(allowed("/mnt/us/koreader/patches/").is_err());
+        assert!(allowed("/mnt/us/fonts/a/b.ttf").is_err());
+        assert!(allowed("/etc/passwd").is_err());
+    }
+}
+
+/// Against the real Kindle: `cargo test -- --ignored --nocapture`
+#[cfg(test)]
+mod live {
+    use super::*;
+
+    #[test]
+    #[ignore]
+    fn kindle_end_to_end() {
+        tauri::async_runtime::block_on(async {
+            let s = status().await.expect("status");
+            println!("host {} battery {:?} free {} MB reader {}", s.host, s.battery, s.free_kb / 1024, s.reader_running);
+
+            let dump = ssh::run(highlights::FETCH_CMD).await.expect("fetch");
+            let (books, errors) = highlights::parse_dump(&dump);
+            println!("{} books with highlights, {} parse errors {:?}", books.len(), errors.len(), errors.first());
+            assert!(errors.is_empty());
+            let top = books.iter().max_by_key(|b| b.notes.len()).unwrap();
+            println!("most: {} ({})\n{}", top.title, top.notes.len(), &highlights::markdown(top)[..600.min(highlights::markdown(top).len())]);
+
+            let tmp = std::env::temp_dir().join("kob-live-stats.db");
+            let cmd = format!("sqlite3 {KO}/settings/statistics.sqlite3 '.backup /tmp/kob-stats.db' && cat /tmp/kob-stats.db; r=$?; rm -f /tmp/kob-stats.db; exit $r");
+            ssh::pull_to_file(&cmd, &tmp, |_| {}).await.expect("stats pull");
+            let st = stats::read(&tmp, 0).expect("stats read");
+            println!("stats: {:.1} h, {} days, {} books, last day {:?} min", st.total_hours, st.days_read, st.books, st.daily.last().map(|d| d.minutes));
+            assert_eq!(st.daily.len(), 30);
+
+            let fonts = list_dir("fonts".into()).await.expect("fonts");
+            let patches = list_dir("patches".into()).await.expect("patches");
+            println!("fonts {} · patches {:?}", fonts.len(), patches.iter().map(|p| &p.name).collect::<Vec<_>>());
+            let txt = read_remote(format!("{KO}/patches/{}", patches[0].name)).await.expect("read patch");
+            assert_eq!(txt.len() as u64, patches[0].size);
+        });
+    }
+
+    #[test]
+    #[ignore]
+    fn kindle_writes() {
+        tauri::async_runtime::block_on(async {
+            // backup: same remote command as backup_run, settings + sidecars only
+            let dir = std::env::temp_dir().join("kob-live-backup");
+            std::fs::create_dir_all(&dir).unwrap();
+            let cmd = "cd /mnt/us && { for p in koreader/settings koreader/settings.reader.lua koreader/history.lua \
+                 koreader/defaults.custom.lua koreader/patches koreader/styletweaks ; do [ -e \"$p\" ] && echo \"$p\"; done; \
+                 find books documents -type d -name '*.sdr' ! -path '*/dictionaries/*' 2>/dev/null; } > /tmp/kob-list && \
+                 tar -cf - -T /tmp/kob-list; r=$?; rm -f /tmp/kob-list; exit $r";
+            let tar = dir.join("t.tar");
+            let n = ssh::pull_to_file(cmd, &tar, |_| {}).await.expect("backup");
+            let listing = std::process::Command::new("tar").arg("-tf").arg(&tar).output().unwrap();
+            let names = String::from_utf8_lossy(&listing.stdout);
+            println!("backup {} MB, {} entries", n / 1024 / 1024, names.lines().count());
+            assert!(names.contains("koreader/settings/statistics.sqlite3"));
+            assert!(names.contains(".sdr/metadata.epub.lua"));
+
+            // upload a file whose name has spaces, parens and a quote
+            let local = dir.join("Prueba (1) d'Ana.epub");
+            std::fs::write(&local, b"hola").unwrap();
+            let remote = ssh::upload(&local, "/tmp/kob test").await.expect("upload");
+            assert_eq!(ssh::run(&format!("cat {}", sq(&remote))).await.unwrap(), "hola");
+            ssh::run("rm -rf '/tmp/kob test'").await.unwrap();
+
+            // write / rename / delete a disabled patch
+            let p = format!("{KO}/patches/9-kob-test.lua.disabled");
+            write_remote(p.clone(), "-- kob \"test\" 'q'\n".into()).await.expect("write");
+            assert_eq!(read_remote(p.clone()).await.unwrap(), "-- kob \"test\" 'q'\n");
+            let q = format!("{KO}/patches/9-kob-test2.lua.disabled");
+            rename_remote(p.clone(), q.clone()).await.expect("rename");
+            delete_remote(q.clone()).await.expect("delete");
+            delete_remote(format!("{p}.kob.bak")).await.ok();
+            assert!(!ssh::run(&format!("ls {KO}/patches")).await.unwrap().contains("kob-test"));
+
+            // settings.reader.lua is refused while KOReader runs
+            if status().await.unwrap().reader_running {
+                assert!(write_remote(format!("{KO}/settings.reader.lua"), String::new()).await.is_err());
+            }
+
+            // streaming
+            let mut child = ssh::stream(&format!("tail -n 3 {KO}/crash.log")).unwrap();
+            let out = child.stdout.take().unwrap();
+            let mut lines = BufReader::new(out).lines();
+            let mut got = 0;
+            while let Ok(Some(_)) = lines.next_line().await { got += 1; }
+            assert_eq!(got, 3);
+            std::fs::remove_dir_all(&dir).ok();
+            println!("writes ok");
+        });
+    }
+
+    #[test]
+    #[ignore]
+    fn kindle_size() {
+        tauri::async_runtime::block_on(async {
+            let s = backup_size().await.expect("size");
+            let mb = |b: u64| b / 1024 / 1024;
+            println!("books {} MB in {} files · base {} MB · full {} MB · {:.2} MB/s · full ≈ {:.0} min",
+                mb(s.books_bytes), s.books_files, mb(s.base_bytes), mb(s.full_bytes), s.bytes_per_sec / 1048576.0,
+                s.full_bytes as f64 / s.bytes_per_sec / 60.0);
+            assert!(s.full_bytes > s.books_bytes && s.base_bytes > 0);
+        });
+    }
+}
+

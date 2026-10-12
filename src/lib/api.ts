@@ -1,0 +1,70 @@
+import { invoke, Channel } from '@tauri-apps/api/core'
+
+export const KO = '/mnt/us/koreader'
+
+export type Status = { host: string; battery: number | null; free_kb: number; total_kb: number; reader_running: boolean }
+export type Settings = { backup_dir: string; vault_dir: string; backup_books: boolean; auto_backup: boolean; last_auto_backup: string }
+export type BackupFile = { name: string; path: string; size: number; modified: number }
+export type BackupSize = { books_bytes: number; books_files: number; base_bytes: number; full_bytes: number; bytes_per_sec: number }
+export type Day = { date: string; minutes: number }
+export type StatBook = { title: string; authors: string; pages: number; percent: number; hours: number; last_open: number }
+export type Stats = { total_hours: number; days_read: number; books: number; avg_minutes: number; snapshot_at: number; daily: Day[]; recent: StatBook[] }
+export type Note = { text: string; note: string | null; chapter: string | null; page: number | null; datetime: string | null }
+export type HBook = { sidecar: string; title: string; authors: string; percent: number; notes: Note[] }
+export type HighlightSet = { books: HBook[]; errors: string[]; fetched_at: number }
+export type Entry = { name: string; size: number }
+export type Kind = 'books' | 'fonts' | 'patches'
+
+export const api = {
+  status: () => invoke<Status>('status'),
+  getSettings: () => invoke<Settings>('get_settings'),
+  setSettings: (settings: Settings) => invoke<void>('set_settings', { settings }),
+  backupRun: (stamp: string, onBytes: (n: number) => void) => {
+    const progress = new Channel<number>()
+    progress.onmessage = onBytes
+    return invoke<BackupFile>('backup_run', { stamp, progress })
+  },
+  backupSize: () => invoke<BackupSize>('backup_size'),
+  backupList: () => invoke<BackupFile[]>('backup_list'),
+  reveal: (path: string) => invoke<void>('reveal', { path }),
+  stats: (refresh: boolean) => invoke<Stats | null>('stats', { refresh }),
+  highlights: (refresh: boolean) => invoke<HighlightSet>('highlights', { refresh }),
+  highlightsExport: (books: HBook[]) => invoke<number>('highlights_export', { books }),
+  sendFile: (path: string, kind: Kind) => invoke<string>('send_file', { path, kind }),
+  listDir: (kind: Kind) => invoke<Entry[]>('list_dir', { kind }),
+  readRemote: (path: string) => invoke<string>('read_remote', { path }),
+  writeRemote: (path: string, content: string) => invoke<void>('write_remote', { path, content }),
+  renameRemote: (from: string, to: string) => invoke<void>('rename_remote', { from, to }),
+  deleteRemote: (path: string) => invoke<void>('delete_remote', { path }),
+  logStart: (onLine: (l: string) => void) => {
+    const lines = new Channel<string>()
+    lines.onmessage = onLine
+    return invoke<void>('log_start', { lines })
+  },
+  logStop: () => invoke<void>('log_stop'),
+  screenMessage: (text: string) => invoke<void>('screen_message', { text }),
+}
+
+export const fmtBytes = (n: number) =>
+  (n < 1024 ? `${n} B` : n < 1024 ** 2 ? `${(n / 1024).toFixed(0)} KB` : n < 1024 ** 3 ? `${(n / 1024 ** 2).toFixed(1)} MB` : `${(n / 1024 ** 3).toFixed(1)} GB`).replace('.', ',')
+
+const dateFmt = new Intl.DateTimeFormat('es', { day: 'numeric', month: 'short' })
+const timeFmt = new Intl.DateTimeFormat('es', { hour: '2-digit', minute: '2-digit' })
+
+/** "hoy, 14:52" / "6 oct, 11:53" from unix seconds */
+export function fmtWhen(secs: number) {
+  const d = new Date(secs * 1000)
+  const today = new Date().toDateString() === d.toDateString()
+  return `${today ? 'hoy' : dateFmt.format(d)}, ${timeFmt.format(d)}`
+}
+
+/** "6 min" / "1 h 12 min" / "40 s" */
+export function fmtDuration(secs: number) {
+  if (secs < 60) return `${Math.max(1, Math.round(secs))} s`
+  const m = Math.round(secs / 60)
+  return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`
+}
+
+export const today = () => new Date().toLocaleDateString('sv') // YYYY-MM-DD
+
+export const errText = (e: unknown) => (typeof e === 'string' ? e : e instanceof Error ? e.message : JSON.stringify(e))
