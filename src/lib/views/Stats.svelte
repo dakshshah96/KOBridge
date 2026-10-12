@@ -1,7 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import Loading from '../Loading.svelte'
-  import { api, errText, fmtWhen, type Stats } from '../api'
+  import { api, errText, fmtDay, fmtWhen, type Stats } from '../api'
+  import { t, dec } from '../i18n.svelte'
   import { app } from '../store.svelte'
 
   let stats = $state<Stats | null>(null)
@@ -34,36 +35,36 @@
   const ticks = $derived(Array.from({ length: max / 30 + 1 }, (_, i) => i * 30).filter((v, _, a) => a.length <= 5 || v % 60 === 0))
   const y = (m: number) => BASE - (m / max) * (BASE - TOP)
   const step = $derived((W - LEFT) / (stats?.daily.length || 30))
-  const dayLabel = (iso: string) => new Date(iso + 'T12:00').toLocaleDateString('es', { day: 'numeric', month: 'short' })
+  const dayLabel = (iso: string) => fmtDay(new Date(iso + 'T12:00'))
   const peak = $derived(Math.round(Math.max(0, ...(stats?.daily ?? []).map((d) => d.minutes))))
-  const fmt = (n: number, d = 1) => n.toFixed(d).replace('.', ',')
+  const fmt = dec
 </script>
 
 <div class="stack">
   <div class="head">
     <div>
-      <h1>Lectura</h1>
-      <p class="sub">{stats ? `statistics.sqlite3 copiado ${fmtWhen(stats.snapshot_at)}` : 'Sin copia local de las estadísticas'}</p>
+      <h1>{t('Reading', 'Lectura')}</h1>
+      <p class="sub">{stats ? `statistics.sqlite3 ${t('copied', 'copiado')} ${fmtWhen(stats.snapshot_at)}` : t('No local copy of the statistics', 'Sin copia local de las estadísticas')}</p>
     </div>
-    <button class="btn ghost" disabled={!app.status || busy} onclick={() => load(true)}>{busy ? 'Actualizando…' : 'Actualizar'}</button>
+    <button class="btn ghost" disabled={!app.status || busy} onclick={() => load(true)}>{busy ? t('Updating…', 'Actualizando…') : t('Update', 'Actualizar')}</button>
   </div>
 
   {#if error}<div class="banner bad">{error}</div>{/if}
 
   {#if stats}
     <div class="kpis num">
-      <div><span class="label">Tiempo total</span><strong>{fmt(stats.total_hours)} h</strong></div>
-      <div><span class="label">Días con lectura</span><strong>{stats.days_read}</strong></div>
-      <div><span class="label">Libros abiertos</span><strong>{stats.books}</strong></div>
-      <div><span class="label">Promedio por día leído</span><strong>{Math.round(stats.avg_minutes)} min</strong></div>
+      <div><span class="label">{t('Total time', 'Tiempo total')}</span><strong>{fmt(stats.total_hours)} h</strong></div>
+      <div><span class="label">{t('Days with reading', 'Días con lectura')}</span><strong>{stats.days_read}</strong></div>
+      <div><span class="label">{t('Books opened', 'Libros abiertos')}</span><strong>{stats.books}</strong></div>
+      <div><span class="label">{t('Per reading day', 'Promedio por día leído')}</span><strong>{Math.round(stats.avg_minutes)} min</strong></div>
     </div>
 
     <div class="chart">
-      <div class="row" style="justify-content:space-between"><span class="label">Minutos por día · últimos 30 días</span><span class="label num">máx. {peak} min</span></div>
-      <svg viewBox="0 0 {W} 146" role="img" aria-label="Minutos leídos por día en los últimos 30 días">
-        {#each ticks as t}
-          <line x1={LEFT} x2={W} y1={y(t)} y2={y(t)} />
-          <text x="0" y={y(t) + 3}>{t}</text>
+      <div class="row" style="justify-content:space-between"><span class="label">{t('Minutes per day · last 30 days', 'Minutos por día · últimos 30 días')}</span><span class="label num">{t('max', 'máx.')} {peak} min</span></div>
+      <svg viewBox="0 0 {W} 146" role="img" aria-label={t('Minutes read per day in the last 30 days', 'Minutos leídos por día en los últimos 30 días')}>
+        {#each ticks as tick}
+          <line x1={LEFT} x2={W} y1={y(tick)} y2={y(tick)} />
+          <text x="0" y={y(tick) + 3}>{tick}</text>
         {/each}
         {#each stats.daily as d, i}
           {#if d.minutes > 0}
@@ -72,14 +73,15 @@
             </rect>
           {/if}
           {#if (stats.daily.length - 1 - i) % 7 === 0}
-            <text x={LEFT + i * step + 2} y={BASE + 17}>{i === stats.daily.length - 1 ? 'hoy' : dayLabel(d.date)}</text>
+            {#if i === stats.daily.length - 1}<text x={W} y={BASE + 17} text-anchor="end">{t('today', 'hoy')}</text>
+            {:else}<text x={LEFT + i * step + 2} y={BASE + 17}>{dayLabel(d.date)}</text>{/if}
           {/if}
         {/each}
       </svg>
     </div>
 
     <table class="num">
-      <thead><tr><th>Libro</th><th>Progreso</th><th>Tiempo</th><th>Última vez</th></tr></thead>
+      <thead><tr><th>{t('Book', 'Libro')}</th><th>{t('Progress', 'Progreso')}</th><th>{t('Time', 'Tiempo')}</th><th>{t('Last opened', 'Última vez')}</th></tr></thead>
       <tbody>
         {#each stats.recent as b}
           <tr>
@@ -93,11 +95,11 @@
     </table>
   {:else if busy || !opened || app.checking}
     <Loading
-      title={busy ? 'Copiando estadísticas de la Kindle' : !opened ? 'Abriendo estadísticas guardadas' : 'Esperando a la Kindle'}
-      detail={busy ? 'sqlite3 .backup de statistics.sqlite3 y copia por SSH' : 'Primero hay que encontrarla en la red'}
+      title={busy ? t('Copying statistics from the Kindle', 'Copiando estadísticas de la Kindle') : !opened ? t('Opening saved statistics', 'Abriendo estadísticas guardadas') : t('Waiting for the Kindle', 'Esperando a la Kindle')}
+      detail={busy ? t('sqlite3 .backup of statistics.sqlite3 and a copy over SSH', 'sqlite3 .backup de statistics.sqlite3 y copia por SSH') : t('First the app has to find it on the network', 'Primero hay que encontrarla en la red')}
     />
   {:else}
-    <div class="empty">Conectá la Kindle para copiar las estadísticas de KOReader.</div>
+    <div class="empty">{t('Connect the Kindle to copy the KOReader statistics.', 'Conectá la Kindle para copiar las estadísticas de KOReader.')}</div>
   {/if}
 </div>
 

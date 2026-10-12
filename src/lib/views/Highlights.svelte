@@ -4,6 +4,7 @@
   import Loading from '../Loading.svelte'
   import { api, errText, fmtWhen, today, type HighlightSet, type HBook, type Model, type EnrichEvent } from '../api'
   import { app, saveSettings } from '../store.svelte'
+  import { t } from '../i18n.svelte'
 
   let set = $state<HighlightSet>({ books: [], errors: [], fetched_at: 0 })
   let selected = $state(0)
@@ -22,7 +23,7 @@
       set = await api.highlights(true)
       selected = Math.min(selected, Math.max(0, set.books.length - 1))
       const added = before >= 0 ? count(set) - before : 0
-      fresh = added > 0 ? ` · ${added} subrayados nuevos` : ''
+      fresh = added > 0 ? ` · ${added} ${t('new highlights', 'subrayados nuevos')}` : ''
     } catch (e) {
       msg = { kind: 'bad', text: errText(e) }
     } finally {
@@ -44,9 +45,9 @@
     exporting = true
     try {
       const r = await api.highlightsExport(set.books)
-      const parts = [`${r.created} notas nuevas`, `${r.updated} actualizadas`, `${r.added} subrayados agregados`]
-      const legacy = r.legacy ? ` Renombré ${r.legacy} notas de la versión anterior a "(anterior)".` : ''
-      msg = { kind: 'ok', text: `Exporté a ${r.dir}: ${parts.join(', ')}.${legacy}`, reveal: true }
+      const parts = [`${r.created} ${t('new notes', 'notas nuevas')}`, `${r.updated} ${t('updated', 'actualizadas')}`, `${r.added} ${t('highlights added', 'subrayados agregados')}`]
+      const legacy = r.legacy ? t(` Renamed ${r.legacy} notes from the previous version to "(anterior)".`, ` Renombré ${r.legacy} notas de la versión anterior a "(anterior)".`) : ''
+      msg = { kind: 'ok', text: `${t('Exported to', 'Exporté a')} ${r.dir}: ${parts.join(', ')}.${legacy}`, reveal: true }
     } catch (e) {
       msg = { kind: 'bad', text: errText(e) }
     } finally {
@@ -80,12 +81,12 @@
   })
 
   // ---- Claude ----
-  const MODELS: { id: Model; name: string; hint: string }[] = [
-    { id: 'haiku', name: 'Haiku', hint: 'más rápido' },
-    { id: 'sonnet', name: 'Sonnet', hint: 'equilibrado' },
-    { id: 'opus', name: 'Opus', hint: 'más profundo' },
-    { id: 'fable', name: 'Fable', hint: 'el más nuevo' },
-  ]
+  const MODELS: { id: Model; name: string; hint: string }[] = $derived([
+    { id: 'haiku', name: 'Haiku', hint: t('fastest', 'más rápido') },
+    { id: 'sonnet', name: 'Sonnet', hint: t('balanced', 'equilibrado') },
+    { id: 'opus', name: 'Opus', hint: t('deepest', 'más profundo') },
+    { id: 'fable', name: 'Fable', hint: t('newest', 'el más nuevo') },
+  ])
   const model = $derived<Model>(app.settings?.ai_model || 'sonnet')
   let picked = $state<string[]>([])
   const toggle = (id: string) => (picked = picked.includes(id) ? picked.filter((x) => x !== id) : [...picked, id])
@@ -103,7 +104,7 @@
     const onEvent = (ev: EnrichEvent) => {
       const j = jobs.find((j) => j.title === ev.book && (j.state === 'waiting' || j.state === 'running'))
       if (!j) return
-      if (ev.kind === 'start') { j.state = 'running'; j.text = kind === 'anki' ? 'Escribiendo tarjetas' : 'Abriendo la nota' }
+      if (ev.kind === 'start') { j.state = 'running'; j.text = kind === 'anki' ? t('Writing cards', 'Escribiendo tarjetas') : t('Opening the note', 'Abriendo la nota') }
       else if (ev.kind === 'tool') j.text = ev.text
       else if (ev.kind === 'done') { j.state = 'done'; j.text = ev.text }
       else { j.state = 'error'; j.text = ev.text }
@@ -112,16 +113,16 @@
       if (kind === 'enrich') await api.enrichStart(books, model, today(), onEvent)
       else {
         const file = await api.ankiStart(books, model, today(), onEvent)
-        if (file) msg = { kind: 'ok', text: `Guardé las tarjetas en ${file}. Anki las importa al mazo KOReader y actualiza las que ya tenías.`, anki: file }
+        if (file) msg = { kind: 'ok', text: t(`Saved the cards to ${file}. Anki imports them into the KOReader deck and updates the ones you already had.`, `Guardé las tarjetas en ${file}. Anki las importa al mazo KOReader y actualiza las que ya tenías.`), anki: file }
       }
     } catch (e) {
       msg = { kind: 'bad', text: errText(e) }
     } finally {
-      for (const j of jobs) if (j.state === 'waiting' || j.state === 'running') { j.state = 'error'; j.text = 'Cancelado' }
+      for (const j of jobs) if (j.state === 'waiting' || j.state === 'running') { j.state = 'error'; j.text = t('Canceled', 'Cancelado') }
       running = ''
     }
   }
-  const jobLabel = { waiting: 'En cola', running: 'Trabajando…', done: 'Listo', error: 'Error' }
+  const jobLabel = $derived({ waiting: t('Queued', 'En cola'), running: t('Working…', 'Trabajando…'), done: t('Done', 'Listo'), error: 'Error' })
 
   const book = $derived(set.books[selected])
   const waitingForKindle = $derived(!set.books.length && phase === 'idle' && !app.status && app.checking)
@@ -130,22 +131,22 @@
 <div class="stack">
   <div class="head">
     <div>
-      <h1>Subrayados</h1>
+      <h1>{t('Highlights', 'Subrayados')}</h1>
       <p class="sub num">
-        {#if set.books.length}{set.books.length} libros · {count(set)} subrayados ·&nbsp;{/if}destino
-        <select class="vault" value={app.settings?.vault_dir} onchange={onVault} title={app.settings?.vault_dir} aria-label="Carpeta de Obsidian">
+        {#if set.books.length}{set.books.length} {t('books', 'libros')} · {count(set)} {t('highlights', 'subrayados')} ·&nbsp;{/if}{t('to', 'destino')}
+        <select class="vault" value={app.settings?.vault_dir} onchange={onVault} title={app.settings?.vault_dir} aria-label={t('Obsidian folder', 'Carpeta de Obsidian')}>
           {#each vaultOptions as o (o.value)}<option value={o.value}>{o.label}</option>{/each}
-          <option value="__other">Otra carpeta…</option>
+          <option value="__other">{t('Other folder…', 'Otra carpeta…')}</option>
         </select>
-        {#if !vaults.length}<button class="link" onclick={createVault}>Crear bóveda</button>{/if}
+        {#if !vaults.length}<button class="link" onclick={createVault}>{t('Create vault', 'Crear bóveda')}</button>{/if}
       </p>
     </div>
     <div class="row">
       <button class="btn ghost" disabled={!app.status || phase !== 'idle'} onclick={refresh}>
-        {phase === 'fetching' ? 'Leyendo…' : 'Actualizar'}
+        {phase === 'fetching' ? t('Reading…', 'Leyendo…') : t('Update', 'Actualizar')}
       </button>
       <button class="btn" disabled={!set.books.length || exporting} onclick={exportAll}>
-        {exporting ? 'Exportando…' : 'Exportar a Obsidian'}
+        {exporting ? t('Exporting…', 'Exportando…') : t('Export to Obsidian', 'Exportar a Obsidian')}
       </button>
     </div>
   </div>
@@ -154,10 +155,10 @@
     <div class="banner {msg.kind}">
       <span class="selectable">{msg.text}</span>
       <span class="row">
-        {#if msg.anki}{@const f = msg.anki}<button class="link" onclick={() => api.ankiOpen(f).catch((e) => (msg = { kind: 'bad', text: errText(e) }))}>Abrir en Anki</button>
-          <button class="link" onclick={() => api.reveal(f)}>Mostrar en Finder</button>{/if}
-        {#if msg.reveal && app.settings}<button class="link" onclick={() => api.reveal(app.settings!.vault_dir)}>Mostrar en Finder</button>{/if}
-        <button class="link" onclick={() => (msg = null)}>Cerrar</button>
+        {#if msg.anki}{@const f = msg.anki}<button class="link" onclick={() => api.ankiOpen(f).catch((e) => (msg = { kind: 'bad', text: errText(e) }))}>{t('Open in Anki', 'Abrir en Anki')}</button>
+          <button class="link" onclick={() => api.reveal(f)}>{t('Show in Finder', 'Mostrar en Finder')}</button>{/if}
+        {#if msg.reveal && app.settings}<button class="link" onclick={() => api.reveal(app.settings!.vault_dir)}>{t('Show in Finder', 'Mostrar en Finder')}</button>{/if}
+        <button class="link" onclick={() => (msg = null)}>{t('Close', 'Cerrar')}</button>
       </span>
     </div>
   {/if}
@@ -165,9 +166,9 @@
     <div class="claude">
       <div class="intro">
         <p class="label">Claude</p>
-        <p class="sub">Enriquecer agrega a la nota un resumen, etiquetas y enlaces a tus otras notas. Tarjetas escribe preguntas y respuestas para Anki.</p>
+        <p class="sub">{t('Enrich adds a summary, tags and links to your other notes. Anki cards writes questions and answers from your highlights.', 'Enriquecer agrega a la nota un resumen, etiquetas y enlaces a tus otras notas. Tarjetas escribe preguntas y respuestas para Anki.')}</p>
       </div>
-      <div class="models" role="radiogroup" aria-label="Modelo de Claude">
+      <div class="models" role="radiogroup" aria-label={t('Claude model', 'Modelo de Claude')}>
         {#each MODELS as m (m.id)}
           <button class="model" role="radio" aria-checked={model === m.id} disabled={!!running} onclick={() => saveSettings({ ai_model: m.id })}>
             <strong>{m.name}</strong><span>{m.hint}</span>
@@ -175,12 +176,12 @@
         {/each}
       </div>
       <div class="row">
-        {#if running}<button class="btn ghost" onclick={() => api.enrichStop()}>Cancelar</button>{/if}
+        {#if running}<button class="btn ghost" onclick={() => api.enrichStop()}>{t('Cancel', 'Cancelar')}</button>{/if}
         <button class="btn ghost" disabled={!!running || (!picked.length && !book)} onclick={() => run('anki')}>
-          {running === 'anki' ? 'Escribiendo…' : 'Tarjetas Anki'}
+          {running === 'anki' ? t('Writing…', 'Escribiendo…') : t('Anki cards', 'Tarjetas Anki')}
         </button>
         <button class="btn" disabled={!!running || (!picked.length && !book)} onclick={() => run('enrich')}>
-          {running === 'enrich' ? 'Enriqueciendo…' : picked.length ? `Enriquecer ${picked.length} ${picked.length === 1 ? 'libro' : 'libros'}` : 'Enriquecer este libro'}
+          {running === 'enrich' ? t('Enriching…', 'Enriqueciendo…') : picked.length ? t(`Enrich ${picked.length} ${picked.length === 1 ? 'book' : 'books'}`, `Enriquecer ${picked.length} ${picked.length === 1 ? 'libro' : 'libros'}`) : t('Enrich this book', 'Enriquecer este libro')}
         </button>
       </div>
     </div>
@@ -196,23 +197,23 @@
       </div>
     {/if}
   {/if}
-  {#if set.errors.length}<div class="banner warn">No pude leer {set.errors.length} sidecars: {set.errors[0]}</div>{/if}
+  {#if set.errors.length}<div class="banner warn">{t(`Couldn't read ${set.errors.length} sidecars`, `No pude leer ${set.errors.length} sidecars`)}: {set.errors[0]}</div>{/if}
 
   {#if !set.books.length && (phase !== 'idle' || waitingForKindle)}
     <Loading
-      title={phase === 'cache' ? 'Abriendo subrayados guardados' : waitingForKindle ? 'Esperando a la Kindle' : 'Leyendo subrayados de la Kindle'}
-      detail={phase === 'fetching' ? 'Buscando sidecars con notas en /mnt/us/books y /mnt/us/documents' : 'Primero hay que encontrarla en la red'}
+      title={phase === 'cache' ? t('Opening saved highlights', 'Abriendo subrayados guardados') : waitingForKindle ? t('Waiting for the Kindle', 'Esperando a la Kindle') : t('Reading highlights from the Kindle', 'Leyendo subrayados de la Kindle')}
+      detail={phase === 'fetching' ? t('Looking for sidecars with notes in /mnt/us/books and /mnt/us/documents', 'Buscando sidecars con notas en /mnt/us/books y /mnt/us/documents') : t('First the app has to find it on the network', 'Primero hay que encontrarla en la red')}
       rows={7}
     />
   {:else if set.books.length}
     {#if phase === 'fetching'}
-      <p class="sub refreshing"><span class="mini" aria-hidden="true"></span>Buscando subrayados nuevos en la Kindle…</p>
+      <p class="sub refreshing"><span class="mini" aria-hidden="true"></span>{t('Looking for new highlights on the Kindle…', 'Buscando subrayados nuevos en la Kindle…')}</p>
     {/if}
     <div class="split">
       <div class="books list">
         {#each set.books as b, i (b.sidecar)}
           <div class="book" aria-current={i === selected}>
-            <input type="checkbox" checked={picked.includes(b.sidecar)} onchange={() => toggle(b.sidecar)} aria-label={`Elegir ${b.title}`} />
+            <input type="checkbox" checked={picked.includes(b.sidecar)} onchange={() => toggle(b.sidecar)} aria-label={t(`Select ${b.title}`, `Elegir ${b.title}`)} />
             <button onclick={() => (selected = i)}><span class="ellipsis">{b.title}</span><span class="n num">{b.notes.length}</span></button>
           </div>
         {/each}
@@ -220,21 +221,21 @@
       {#if book}
         <article class="selectable">
           <h2>{book.title}</h2>
-          <p class="meta num">{book.authors}{book.authors ? ' · ' : ''}{Math.round(book.percent * 100)} % leído · {book.notes.length} subrayados</p>
+          <p class="meta num">{book.authors}{book.authors ? ' · ' : ''}{Math.round(book.percent * 100)} % {t('read', 'leído')} · {book.notes.length} {t('highlights', 'subrayados')}</p>
           {#each book.notes as n}
             <section class="quote">
               <p><mark>{n.text}</mark></p>
               <span class="ref num">{[n.chapter, n.page ? `p. ${n.page}` : null, n.datetime?.slice(0, 10)].filter(Boolean).join(' · ')}</span>
-              {#if n.note}<p class="note"><span class="label">Nota</span> {n.note}</p>{/if}
+              {#if n.note}<p class="note"><span class="label">{t('Note', 'Nota')}</span> {n.note}</p>{/if}
             </section>
           {/each}
         </article>
       {/if}
     </div>
-    {#if set.fetched_at && phase === 'idle'}<p class="sub num">Leído de la Kindle {fmtWhen(set.fetched_at)}{fresh}</p>{/if}
+    {#if set.fetched_at && phase === 'idle'}<p class="sub num">{t('Read from the Kindle', 'Leído de la Kindle')} {fmtWhen(set.fetched_at)}{fresh}</p>{/if}
   {:else}
     <div class="empty">
-      {app.status ? 'KOReader no tiene subrayados todavía.' : 'Conectá la Kindle para leer los subrayados de KOReader.'}
+      {app.status ? t('KOReader has no highlights yet.', 'KOReader no tiene subrayados todavía.') : t('Connect the Kindle to read your KOReader highlights.', 'Conectá la Kindle para leer los subrayados de KOReader.')}
     </div>
   {/if}
 </div>

@@ -6,6 +6,7 @@
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, Command};
 
@@ -13,7 +14,18 @@ pub const HOST: &str = "kindle";
 
 pub type Res<T> = Result<T, String>;
 
-pub const UNREACHABLE: &str = "La Kindle no responde en ninguna de sus IPs conocidas.";
+static SPANISH: AtomicBool = AtomicBool::new(false);
+
+/// Set from `Settings.lang`; every message shown to the user goes through `tr`.
+pub fn set_spanish(on: bool) { SPANISH.store(on, Relaxed) }
+
+pub fn tr(en: impl Into<String>, es: impl Into<String>) -> String {
+    if SPANISH.load(Relaxed) { es.into() } else { en.into() }
+}
+
+pub fn unreachable() -> String {
+    tr("The Kindle doesn't answer on any of its known IPs.", "La Kindle no responde en ninguna de sus IPs conocidas.")
+}
 
 /// Explicit ssh args ending with the destination IP, or None to use the `kindle` alias.
 static TARGET: Mutex<Option<Vec<String>>> = Mutex::new(None);
@@ -58,7 +70,7 @@ fn parse_g(text: &str) -> Res<Option<Vec<String>>> {
         }
     }
     if host.is_empty() || host == HOST {
-        return Err(UNREACHABLE.into()); // every Match probe failed
+        return Err(unreachable()); // every Match probe failed
     }
     if !alias {
         // keep the known_hosts entry the alias would have used
@@ -94,7 +106,7 @@ pub fn sq(s: &str) -> String {
 fn fail(stderr: &[u8], code: Option<i32>) -> String {
     let msg = String::from_utf8_lossy(stderr).trim().to_string();
     if is_connect_error(&msg) { set_target(None); }
-    if msg.is_empty() { format!("ssh terminó con código {}", code.unwrap_or(-1)) } else { msg }
+    if msg.is_empty() { tr(format!("ssh exited with code {}", code.unwrap_or(-1)), format!("ssh terminó con código {}", code.unwrap_or(-1))) } else { msg }
 }
 
 pub async fn run(cmd: &str) -> Res<String> {
@@ -155,7 +167,7 @@ pub async fn pull_to_file(cmd: &str, dest: &Path, mut progress: impl FnMut(u64))
 /// Copy one local file into a remote directory. `cat > file` instead of scp because
 /// scp's remote side word-splits names with spaces and parentheses.
 pub async fn upload(local: &Path, remote_dir: &str) -> Res<String> {
-    let name = local.file_name().and_then(|n| n.to_str()).ok_or("nombre de archivo inválido")?.to_string();
+    let name = local.file_name().and_then(|n| n.to_str()).ok_or(tr("invalid file name", "nombre de archivo inválido"))?.to_string();
     let target = format!("{}/{}", remote_dir.trim_end_matches('/'), name);
     let file = std::fs::File::open(local).map_err(|e| e.to_string())?;
     let cmd = format!("mkdir -p {d} && cat > {t}.kob-part && mv {t}.kob-part {t}", d = sq(remote_dir), t = sq(&target));
@@ -189,7 +201,7 @@ mod tests {
         let t = parse_g("hostname 10.0.0.5\nport 22\n").unwrap().unwrap();
         assert!(t.iter().any(|x| x == "HostKeyAlias=10.0.0.5"));
         // every Match probe failed
-        assert_eq!(parse_g("hostname kindle\nport 2222\n").unwrap_err(), UNREACHABLE);
+        assert_eq!(parse_g("hostname kindle\nport 2222\n").unwrap_err(), unreachable());
         // proxied hosts keep the alias
         assert_eq!(parse_g("hostname 10.0.0.5\nproxyjump bastion\n").unwrap(), None);
     }

@@ -1,9 +1,10 @@
 import { invoke, Channel } from '@tauri-apps/api/core'
+import { i18n, dec, type Lang } from './i18n.svelte'
 
 export const KO = '/mnt/us/koreader'
 
 export type Status = { host: string; battery: number | null; free_kb: number; total_kb: number; reader_running: boolean }
-export type Settings = { backup_dir: string; vault_dir: string; backup_books: boolean; auto_backup: boolean; last_auto_backup: string; ai_model: Model }
+export type Settings = { backup_dir: string; vault_dir: string; backup_books: boolean; auto_backup: boolean; last_auto_backup: string; ai_model: Model; lang: Lang }
 export type BackupFile = { name: string; path: string; size: number; modified: number }
 export type BackupSize = { books_bytes: number; books_files: number; base_bytes: number; full_bytes: number; bytes_per_sec: number }
 export type Day = { date: string; minutes: number }
@@ -63,16 +64,17 @@ export const api = {
 }
 
 export const fmtBytes = (n: number) =>
-  (n < 1024 ? `${n} B` : n < 1024 ** 2 ? `${(n / 1024).toFixed(0)} KB` : n < 1024 ** 3 ? `${(n / 1024 ** 2).toFixed(1)} MB` : `${(n / 1024 ** 3).toFixed(1)} GB`).replace('.', ',')
+  n < 1024 ? `${n} B` : n < 1024 ** 2 ? `${(n / 1024).toFixed(0)} KB` : n < 1024 ** 3 ? `${dec(n / 1024 ** 2)} MB` : `${dec(n / 1024 ** 3)} GB`
 
-const dateFmt = new Intl.DateTimeFormat('es', { day: 'numeric', month: 'short' })
-const timeFmt = new Intl.DateTimeFormat('es', { hour: '2-digit', minute: '2-digit' })
+/** "6 oct" / "Oct 6" */
+export const fmtDay = (d: Date) => d.toLocaleDateString(i18n.lang, { day: 'numeric', month: 'short' })
 
-/** "hoy, 14:52" / "6 oct, 11:53" from unix seconds */
+/** "today, 14:52" / "Oct 6, 11:53" from unix seconds */
 export function fmtWhen(secs: number) {
   const d = new Date(secs * 1000)
   const today = new Date().toDateString() === d.toDateString()
-  return `${today ? 'hoy' : dateFmt.format(d)}, ${timeFmt.format(d)}`
+  const time = d.toLocaleTimeString(i18n.lang, { hour: '2-digit', minute: '2-digit' })
+  return `${today ? (i18n.lang === 'es' ? 'hoy' : 'today') : fmtDay(d)}, ${time}`
 }
 
 /** "6 min" / "1 h 12 min" / "40 s" */

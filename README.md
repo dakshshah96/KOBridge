@@ -33,7 +33,7 @@
   <img src="docs/assets/readme/patches.png" width="400" alt="User patches editor with a Lua patch open and switches to turn patches on and off">
 </p>
 
-KOBridge is a desktop app for people who read with [KOReader](https://koreader.rocks) on a Kindle and keep their notes on a Mac. It connects to the SSH server built into KOReader, so you can back up the device, see your reading statistics, export highlights, send ebooks and fonts, and edit KOReader settings without plugging in a cable. The app is built with Tauri 2, Svelte 5 and Rust, and it takes about 6 MB on disk. The interface is in Spanish.
+KOBridge is a desktop app for people who read with [KOReader](https://koreader.rocks) on a Kindle and keep their notes on a Mac. It connects to the SSH server built into KOReader, so you can back up the device, see your reading statistics, export highlights, send ebooks and fonts, and edit KOReader settings without plugging in a cable. The app is built with Tauri 2, Svelte 5 and Rust, and it takes about 6 MB on disk. The interface is in English and Spanish, and you switch between them at the bottom of the sidebar.
 
 ## Everything it does
 
@@ -75,7 +75,7 @@ xattr -dr com.apple.quarantine /Applications/KOBridge.app
 
 Third, when macOS asks whether KOBridge can find devices on your local network, allow it. Without that permission the app can't reach the Kindle, even when `ssh kindle` works in Terminal. You can change it later in System Settings, under Privacy & Security, Local Network.
 
-The sidebar shows whether the app found the Kindle, its IP address, the battery level and the free space. If it can't find the Kindle, open Detalle to see the SSH error.
+The sidebar shows whether the app found the Kindle, its IP address, the battery level and the free space. If it can't find the Kindle, open Details to see the SSH error.
 
 ## Set up the Kindle
 
@@ -142,13 +142,13 @@ The first time, SSH asks you to confirm the fingerprint of the Kindle, and you a
 
 ### Default folders
 
-The app saves backups in `~/Backups/kindle` and exports highlights to `~/Documents/Obsidian Vault/KOReader`. You can pick another vault in Subrayados and another backup folder in Respaldo.
+The app saves backups in `~/Backups/kindle` and exports highlights to `~/Documents/Obsidian Vault/KOReader`. You can pick another vault in Highlights and another backup folder in Backup.
 
-Anki cards go to `~/Downloads/KOReader Anki <date>.txt`, with a deck called `KOReader::<book>` for each book. Open Anki once to create your profile before you import them. The Abrir en Anki button opens the import dialog.
+Anki cards go to `~/Downloads/KOReader Anki <date>.txt`, with a deck called `KOReader::<book>` for each book. Open Anki once to create your profile before you import them. The Open in Anki button opens the import dialog.
 
 ## Private by default
 
-KOBridge has no account, no analytics and no tracking. The app only connects to your Kindle over SSH. Your highlights leave your Mac only when you press Enriquecer or Tarjetas Anki, and then Claude Code sends them to Anthropic under your own Claude login.
+KOBridge has no account, no analytics and no tracking. The app only connects to your Kindle over SSH. Your highlights leave your Mac only when you press Enrich or Anki cards, and then Claude Code sends them to Anthropic under your own Claude login.
 
 When Claude edits a note, the app runs `claude -p` inside your vault with only the Read, Glob, Grep and Edit tools. If the vault doesn't use git, the app saves a `.kob.bak` copy of each note before Claude edits it.
 

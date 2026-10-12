@@ -1,12 +1,13 @@
 <script lang="ts">
   import { api, errText, KO } from '../api'
   import { app, refreshStatus } from '../store.svelte'
+  import { t } from '../i18n.svelte'
 
-  const files = [
-    { name: 'defaults.custom.lua', hint: 'Valores por defecto que KOReader lee al arrancar. Se aplican la próxima vez que lo abras.' },
-    { name: 'settings.reader.lua', hint: 'Todas las preferencias de KOReader. Solo se puede guardar con KOReader cerrado, porque al cerrar lo sobrescribe.' },
-  ]
-  let current = $state(files[0].name)
+  const files = $derived([
+    { name: 'defaults.custom.lua', hint: t('Defaults that KOReader reads at startup. They apply the next time you open it.', 'Valores por defecto que KOReader lee al arrancar. Se aplican la próxima vez que lo abras.') },
+    { name: 'settings.reader.lua', hint: t('All KOReader preferences. You can only save it while KOReader is closed, because KOReader overwrites it on exit.', 'Todas las preferencias de KOReader. Solo se puede guardar con KOReader cerrado, porque al cerrar lo sobrescribe.') },
+  ])
+  let current = $state('defaults.custom.lua')
   let text = $state('')
   let saved = $state('')
   let error = $state('')
@@ -26,7 +27,7 @@
     try {
       await api.writeRemote(`${KO}/${current}`, text)
       saved = text
-      note = `Guardado. La versión anterior quedó en ${current}.kob.bak`
+      note = t(`Saved. The previous version is in ${current}.kob.bak`, `Guardado. La versión anterior quedó en ${current}.kob.bak`)
     } catch (e) {
       error = errText(e)
     }
@@ -38,7 +39,7 @@
 <div class="stack">
   <div class="head">
     <div>
-      <h1>Ajustes</h1>
+      <h1>{t('Settings', 'Ajustes')}</h1>
       <p class="sub">{file.hint}</p>
     </div>
   </div>
@@ -47,13 +48,13 @@
   {#if note}<div class="banner ok">{note}</div>{/if}
   {#if locked}
     <div class="banner warn">
-      <span>KOReader está abierto, así que este archivo queda en solo lectura. Cerralo en la Kindle con el servidor SSH activo.</span>
-      <button class="link" onclick={refreshStatus}>Volver a revisar</button>
+      <span>{t('KOReader is open, so this file is read-only. Close it on the Kindle and keep the SSH server running.', 'KOReader está abierto, así que este archivo queda en solo lectura. Cerralo en la Kindle con el servidor SSH activo.')}</span>
+      <button class="link" onclick={refreshStatus}>{t('Check again', 'Volver a revisar')}</button>
     </div>
   {/if}
 
   {#if !app.status}
-    <div class="empty">Conectá la Kindle para editar su configuración.</div>
+    <div class="empty">{t('Connect the Kindle to edit its settings.', 'Conectá la Kindle para editar su configuración.')}</div>
   {:else}
     <div class="editor">
       <div class="bar">
@@ -62,10 +63,10 @@
             <button class="btn" class:ghost={f.name !== current} role="tab" aria-selected={f.name === current} onclick={() => open(f.name)}>{f.name}</button>
           {/each}
         </div>
-        <button class="btn" disabled={!dirty || locked} onclick={save}>Guardar</button>
+        <button class="btn" disabled={!dirty || locked} onclick={save}>{t('Save', 'Guardar')}</button>
       </div>
-      <textarea bind:value={text} readonly={locked} spellcheck="false" aria-label="Contenido de {current}"
-        placeholder={current === 'defaults.custom.lua' ? '-- vacío: KOReader usa sus valores de fábrica' : ''}></textarea>
+      <textarea bind:value={text} readonly={locked} spellcheck="false" aria-label={t(`Contents of ${current}`, `Contenido de ${current}`)}
+        placeholder={current === 'defaults.custom.lua' ? t('-- empty: KOReader uses its factory defaults', '-- vacío: KOReader usa sus valores de fábrica') : ''}></textarea>
     </div>
   {/if}
 </div>

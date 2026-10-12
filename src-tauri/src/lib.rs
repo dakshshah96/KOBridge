@@ -6,7 +6,7 @@ mod ssh;
 mod stats;
 
 use serde::{Deserialize, Serialize};
-use ssh::{sq, Res};
+use ssh::{sq, tr, Res};
 use std::path::{Path, PathBuf};
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager, State};
@@ -35,6 +35,8 @@ struct Settings {
     last_auto_backup: String,
     last_target: Option<Vec<String>>,
     ai_model: String,
+    /// UI language, "en" or "es"
+    lang: String,
 }
 
 impl Default for Settings {
@@ -47,6 +49,7 @@ impl Default for Settings {
             last_auto_backup: String::new(),
             last_target: None,
             ai_model: "sonnet".into(),
+            lang: "en".into(),
         }
     }
 }
@@ -57,14 +60,17 @@ fn settings_path(app: &AppHandle) -> Res<PathBuf> {
 
 #[tauri::command]
 fn get_settings(app: AppHandle) -> Settings {
-    settings_path(&app).ok()
+    let s: Settings = settings_path(&app).ok()
         .and_then(|p| std::fs::read(p).ok())
         .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    ssh::set_spanish(s.lang == "es");
+    s
 }
 
 #[tauri::command]
 fn set_settings(app: AppHandle, settings: Settings) -> Res<()> {
+    ssh::set_spanish(settings.lang == "es");
     let p = settings_path(&app)?;
     std::fs::create_dir_all(p.parent().unwrap()).map_err(e)?;
     std::fs::write(p, serde_json::to_vec_pretty(&settings).map_err(e)?).map_err(e)
@@ -142,7 +148,7 @@ async fn backup_run(app: AppHandle, stamp: String, progress: Channel<u64>) -> Re
     let cmd = format!("{} && tar -cf - -T /tmp/kob-list; r=$?; rm -f /tmp/kob-list; exit $r", backup_list_cmd(s.backup_books));
     let dest = dir.join(format!("kindle-{stamp}.tar"));
     ssh::pull_to_file(&cmd, &dest, |n| { let _ = progress.send(n); }).await?;
-    Ok(file_info(&dest).ok_or("no se pudo leer el respaldo")?)
+    Ok(file_info(&dest).ok_or(tr("couldn't read the backup", "no se pudo leer el respaldo"))?)
 }
 
 /// Shell that writes the backup's path list to /tmp/kob-list, run from /mnt/us.
@@ -165,7 +171,7 @@ async fn backup_size() -> Res<BackupSize> {
         "{base} && {du} && {full} && {du} && du -sk /mnt/us/books | cut -f1 && find /mnt/us/books -type f | wc -l; rm -f /tmp/kob-list",
         base = backup_list_cmd(false), full = backup_list_cmd(true))).await?;
     let n: Vec<u64> = out.split_whitespace().filter_map(|v| v.parse().ok()).collect();
-    let [base_kb, full_kb, books_kb, books_files] = n[..] else { return Err(format!("respuesta inesperada de du: {out}")) };
+    let [base_kb, full_kb, books_kb, books_files] = n[..] else { return Err(tr(format!("unexpected du output: {out}"), format!("respuesta inesperada de du: {out}"))) };
 
     let probe = std::env::temp_dir().join("kob-speed.bin");
     let t = std::time::Instant::now();
@@ -281,14 +287,14 @@ fn export(app: &AppHandle, books: &[highlights::Book], with_index: bool) -> Res<
         let x = extra_for(&all, b);
         let name = highlights::file_name(&b.title);
         let p = dir.join(&name);
-        let write = |doc: &str| std::fs::write(&p, doc).map_err(|err| format!("No pude escribir {}: {err}", p.display()));
+        let write = |doc: &str| std::fs::write(&p, doc).map_err(|err| tr(format!("Couldn't write {}: {err}", p.display()), format!("No pude escribir {}: {err}", p.display())));
         match std::fs::read_to_string(&p) {
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
                 write(&obsidian::render(b, &x))?;
                 r.created += 1;
                 r.added += b.notes.len();
             }
-            Err(err) => return Err(format!("No pude leer {}: {err}", p.display())),
+            Err(err) => return Err(tr(format!("Couldn't read {}: {err}", p.display()), format!("No pude leer {}: {err}", p.display()))),
             Ok(old) => match obsidian::merge(&old, b, &x) {
                 obsidian::Merge::Unchanged => {}
                 obsidian::Merge::Updated { doc, added } => {
@@ -299,7 +305,7 @@ fn export(app: &AppHandle, books: &[highlights::Book], with_index: bool) -> Res<
                 obsidian::Merge::Legacy => {
                     // a note from 0.1.1 has no block ids: keep it next to the new one
                     let old_p = dir.join(format!("{} (anterior).md", name.trim_end_matches(".md")));
-                    if old_p.exists() { return Err(format!("Ya existe {}; movelo y exportá de nuevo.", old_p.display())); }
+                    if old_p.exists() { return Err(tr(format!("{} already exists. Move it and export again.", old_p.display()), format!("Ya existe {}; movelo y exportá de nuevo.", old_p.display()))); }
                     std::fs::rename(&p, &old_p).map_err(e)?;
                     write(&obsidian::render(b, &x))?;
                     r.legacy += 1;
@@ -349,7 +355,7 @@ async fn enrich_start(app: AppHandle, job: State<'_, Enrich>, books: Vec<highlig
                       events: Channel<EnrichEvent>) -> Res<()> {
     if !obsidian::MODELS.contains(&model.as_str()) { return Err(format!("modelo desconocido: {model}")); }
     if today.len() != 10 || !today.chars().all(|c| c.is_ascii_digit() || c == '-') { return Err("fecha inválida".into()); }
-    let claude = obsidian::find_claude(&home()).ok_or("No encontré Claude Code. Instalalo con `brew install --cask claude-code`.")?;
+    let claude = obsidian::find_claude(&home()).ok_or(tr("Claude Code isn't installed. Install it with `brew install --cask claude-code`.", "No encontré Claude Code. Instalalo con `brew install --cask claude-code`."))?;
     let (_, paths) = export(&app, &books, false)?;
     let root = obsidian::vault_root(&PathBuf::from(get_settings(app.clone()).vault_dir));
     let git = root.join(".git").exists();
@@ -397,10 +403,10 @@ async fn enrich_one(claude: &Path, root: &Path, note: &Path, model: &str, job: &
         }
     }
     let child = job.child.lock().await.take();
-    let (Some(mut child), false) = (child, job.cancel.load(SeqCst)) else { return Err("Cancelado".into()) };
+    let (Some(mut child), false) = (child, job.cancel.load(SeqCst)) else { return Err(tr("Canceled", "Cancelado")) };
     let status = child.wait().await.map_err(e)?;
     let stderr = stderr.await.unwrap_or_default();
-    result.unwrap_or_else(|| Err(stderr.trim().lines().last().map(str::to_string).unwrap_or(format!("claude terminó con {status}"))))
+    result.unwrap_or_else(|| Err(stderr.trim().lines().last().map(str::to_string).unwrap_or(tr(format!("claude exited with {status}"), format!("claude terminó con {status}")))))
 }
 
 /// Asks Claude for cards per book and writes one Anki text file to ~/Downloads; returns its path.
@@ -409,7 +415,7 @@ async fn anki_start(app: AppHandle, job: State<'_, Enrich>, books: Vec<highlight
                     events: Channel<EnrichEvent>) -> Res<Option<String>> {
     if !obsidian::MODELS.contains(&model.as_str()) { return Err(format!("modelo desconocido: {model}")); }
     if today.len() != 10 || !today.chars().all(|c| c.is_ascii_digit() || c == '-') { return Err("fecha inválida".into()); }
-    let claude = obsidian::find_claude(&home()).ok_or("No encontré Claude Code. Instalalo con `brew install --cask claude-code`.")?;
+    let claude = obsidian::find_claude(&home()).ok_or(tr("Claude Code isn't installed. Install it with `brew install --cask claude-code`.", "No encontré Claude Code. Instalalo con `brew install --cask claude-code`."))?;
     // an empty cwd, so Claude Code picks up no project CLAUDE.md
     let cwd = app.path().app_cache_dir().map_err(e)?.join("anki");
     std::fs::create_dir_all(&cwd).map_err(e)?;
@@ -420,8 +426,8 @@ async fn anki_start(app: AppHandle, job: State<'_, Enrich>, books: Vec<highlight
         if job.cancel.load(SeqCst) { break; }
         send(&b.title, "start", String::new());
         match anki_one(&claude, &cwd, b, &model, &job).await {
-            Ok(cards) if cards.is_empty() => send(&b.title, "error", "Claude no escribió tarjetas".into()),
-            Ok(cards) => { send(&b.title, "done", format!("{} tarjetas", cards.len())); done.push((b, cards)); }
+            Ok(cards) if cards.is_empty() => send(&b.title, "error", tr("Claude wrote no cards", "Claude no escribió tarjetas")),
+            Ok(cards) => { send(&b.title, "done", tr(format!("{} cards", cards.len()), format!("{} tarjetas", cards.len()))); done.push((b, cards)); }
             Err(err) => send(&b.title, "error", err),
         }
     }
@@ -430,7 +436,7 @@ async fn anki_start(app: AppHandle, job: State<'_, Enrich>, books: Vec<highlight
     let dl = home().join("Downloads");
     let p = (1..).map(|n| dl.join(if n == 1 { format!("KOReader Anki {today}.txt") } else { format!("KOReader Anki {today} ({n}).txt") }))
         .find(|p| !p.exists()).unwrap();
-    std::fs::write(&p, anki::tsv(&done)).map_err(|err| format!("No pude escribir {}: {err}", p.display()))?;
+    std::fs::write(&p, anki::tsv(&done)).map_err(|err| tr(format!("Couldn't write {}: {err}", p.display()), format!("No pude escribir {}: {err}", p.display())))?;
     Ok(Some(p.to_string_lossy().into()))
 }
 
@@ -450,11 +456,11 @@ async fn anki_one(claude: &Path, cwd: &Path, b: &highlights::Book, model: &str, 
     let mut stdout = String::new();
     let _ = out.read_to_string(&mut stdout).await;
     let child = job.child.lock().await.take();
-    let (Some(mut child), false) = (child, job.cancel.load(SeqCst)) else { return Err("Cancelado".into()) };
+    let (Some(mut child), false) = (child, job.cancel.load(SeqCst)) else { return Err(tr("Canceled", "Cancelado")) };
     let status = child.wait().await.map_err(e)?;
     if stdout.trim().is_empty() {
         let stderr = stderr.await.unwrap_or_default();
-        return Err(stderr.trim().lines().last().map(str::to_string).unwrap_or(format!("claude terminó con {status}")));
+        return Err(stderr.trim().lines().last().map(str::to_string).unwrap_or(tr(format!("claude exited with {status}"), format!("claude terminó con {status}"))));
     }
     anki::parse(&stdout, &b.notes)
 }
@@ -463,7 +469,7 @@ async fn anki_one(claude: &Path, cwd: &Path, b: &highlights::Book, model: &str, 
 #[tauri::command]
 fn anki_open(path: String) -> Res<()> {
     let ok = std::process::Command::new("open").args(["-a", "Anki", &path]).status().map_err(e)?.success();
-    if ok { Ok(()) } else { Err("No encontré Anki. Instalalo desde apps.ankiweb.net y abrilo una vez para crear tu perfil.".into()) }
+    if ok { Ok(()) } else { Err(tr("Anki isn't installed. Get it from apps.ankiweb.net and open it once to create your profile.", "No encontré Anki. Instalalo desde apps.ankiweb.net y abrilo una vez para crear tu perfil.")) }
 }
 
 #[tauri::command]
@@ -515,7 +521,7 @@ fn allowed(path: &str) -> Res<()> {
     if fixed.iter().any(|f| f == path) || ok_dir(&format!("{KO}/patches")) || ok_dir(FONTS) {
         Ok(())
     } else {
-        Err(format!("ruta no permitida: {path}"))
+        Err(tr(format!("path not allowed: {path}"), format!("ruta no permitida: {path}")))
     }
 }
 
@@ -533,7 +539,7 @@ async fn read_remote(path: String) -> Res<String> {
 async fn write_remote(path: String, content: String) -> Res<()> {
     allowed(&path)?;
     if path.ends_with("settings.reader.lua") && reader_running().await? {
-        return Err("KOReader está abierto y sobrescribiría este archivo al cerrar. Cerralo en la Kindle y volvé a guardar.".into());
+        return Err(tr("KOReader is open and would overwrite this file when it exits. Close it on the Kindle and save again.", "KOReader está abierto y sobrescribiría este archivo al cerrar. Cerralo en la Kindle y volvé a guardar."));
     }
     let p = sq(&path);
     ssh::run_with_input(&format!("[ -f {p} ] && cp {p} {p}.kob.bak; cat > {p}.kob-part && mv {p}.kob-part {p}"), content.as_bytes()).await
@@ -582,7 +588,7 @@ async fn log_stop(tail: State<'_, LogTail>) -> Res<()> {
 #[tauri::command]
 async fn screen_message(text: String) -> Res<()> {
     let text: String = text.chars().filter(|c| !c.is_control()).take(200).collect();
-    if text.trim().is_empty() { return Err("El mensaje está vacío".into()); }
+    if text.trim().is_empty() { return Err(tr("The message is empty", "El mensaje está vacío")); }
     ssh::run(&format!("{KO}/fbink -q -m -M -S 3 {}", sq(&text))).await.map(|_| ())
 }
 

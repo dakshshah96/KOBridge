@@ -3,6 +3,7 @@
 
 use crate::highlights::{Book, Note};
 use crate::obsidian::block_id;
+use crate::ssh::tr;
 
 pub const SCHEMA: &str = r#"{"type":"object","properties":{"cards":{"type":"array","items":{"type":"object","properties":{"source":{"type":"integer"},"front":{"type":"string"},"back":{"type":"string"}},"required":["source","front","back"]}}},"required":["cards"]}"#;
 
@@ -27,11 +28,11 @@ pub struct Card { pub guid: String, pub front: String, pub back: String }
 /// Reads the `--output-format json` result; each card's guid is the highlight's block id plus its
 /// position for that highlight, so importing again updates the same notes in Anki.
 pub fn parse(out: &str, notes: &[Note]) -> Result<Vec<Card>, String> {
-    let v: serde_json::Value = serde_json::from_str(out.trim()).map_err(|_| "Claude no devolvió JSON".to_string())?;
+    let v: serde_json::Value = serde_json::from_str(out.trim()).map_err(|_| tr("Claude didn't return JSON", "Claude no devolvió JSON"))?;
     if v["is_error"].as_bool() == Some(true) || v["subtype"] != "success" {
-        return Err(v["result"].as_str().unwrap_or("Claude terminó con error").to_string());
+        return Err(v["result"].as_str().map(str::to_string).unwrap_or_else(|| tr("Claude exited with an error", "Claude terminó con error")));
     }
-    let cards = v["structured_output"]["cards"].as_array().ok_or("Claude no devolvió tarjetas")?;
+    let cards = v["structured_output"]["cards"].as_array().ok_or_else(|| tr("Claude returned no cards", "Claude no devolvió tarjetas"))?;
     let mut seen = vec![0usize; notes.len()];
     let mut out = vec![];
     for c in cards {

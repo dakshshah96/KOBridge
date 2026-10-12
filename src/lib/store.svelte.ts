@@ -1,4 +1,5 @@
 import { api, errText, today, type BackupFile, type Settings, type Status } from './api'
+import { i18n, t } from './i18n.svelte'
 
 export const app = $state({
   status: null as Status | null,
@@ -11,12 +12,13 @@ export const app = $state({
 
 /** Turn ssh's stderr into a next step; keep the raw text for details. */
 function explain(raw: string) {
-  if (/ninguna de sus IPs|resolve hostname kindle|No route to host|Network is unreachable/i.test(raw))
-    return 'La Kindle no responde en ninguna de sus IPs conocidas. Si la Terminal sí llega, dale permiso a KOBridge en Ajustes del Sistema → Privacidad y seguridad → Red local.'
-  if (/timed out/i.test(raw)) return 'La Kindle no respondió a tiempo. Puede que su Wi-Fi esté dormido: tocá la pantalla y reintentá.'
-  if (/Connection refused/i.test(raw)) return 'La Kindle está en la red pero el servidor SSH de KOReader está apagado.'
-  if (/Permission denied/i.test(raw)) return 'La Kindle rechazó la llave SSH.'
-  return 'No pude conectar con la Kindle.'
+  if (/ninguna de sus IPs|none of its known IPs|resolve hostname kindle|No route to host|Network is unreachable/i.test(raw))
+    return t('The Kindle doesn\'t answer on any of its known IPs. If Terminal can reach it, allow KOBridge in System Settings → Privacy & Security → Local Network.',
+      'La Kindle no responde en ninguna de sus IPs conocidas. Si la Terminal sí llega, dale permiso a KOBridge en Ajustes del Sistema → Privacidad y seguridad → Red local.')
+  if (/timed out/i.test(raw)) return t('The Kindle didn\'t answer in time. Its Wi-Fi may be asleep, so tap the screen and try again.', 'La Kindle no respondió a tiempo. Puede que su Wi-Fi esté dormido: tocá la pantalla y reintentá.')
+  if (/Connection refused/i.test(raw)) return t('The Kindle is on the network, but the KOReader SSH server is off.', 'La Kindle está en la red pero el servidor SSH de KOReader está apagado.')
+  if (/Permission denied/i.test(raw)) return t('The Kindle rejected the SSH key.', 'La Kindle rechazó la llave SSH.')
+  return t('Couldn\'t connect to the Kindle.', 'No pude conectar con la Kindle.')
 }
 
 export async function refreshStatus() {
@@ -35,6 +37,18 @@ export async function refreshStatus() {
 
 export async function loadSettings() {
   app.settings = await api.getSettings()
+  setLang(app.settings.lang)
+}
+
+function setLang(lang: Settings['lang']) {
+  i18n.lang = lang === 'es' ? 'es' : 'en'
+  document.documentElement.lang = i18n.lang
+}
+
+export async function changeLang(lang: Settings['lang']) {
+  setLang(lang)
+  await saveSettings({ lang })
+  if (app.offlineReason) app.offlineHint = explain(app.offlineReason)
 }
 
 export async function saveSettings(patch: Partial<Settings>) {

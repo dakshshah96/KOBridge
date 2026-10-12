@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-KOBridge is a macOS app (Tauri 2 + Svelte 5 + Vite, Rust backend) that manages KOReader on a Kindle over SSH. UI copy is Spanish (voseo: "Conectá", "Reiniciá").
+KOBridge is a macOS app (Tauri 2 + Svelte 5 + Vite, Rust backend) that manages KOReader on a Kindle over SSH. The UI is English by default with a Spanish option (voseo: "Conectá", "Reiniciá"), chosen in the sidebar and saved as `Settings.lang`.
 
 ## Commands
 
@@ -51,7 +51,7 @@ Four transport primitives in `ssh.rs`; every feature is a thin wrapper:
 
 Extend that allowlist rather than bypassing it.
 
-**Commands (`lib.rs`)** map one-to-one onto the sidebar views in `src/lib/views/`. They are async Tauri commands that return `Result<T, String>`; the String is shown to the user, so write it in Spanish. Streaming uses `tauri::ipc::Channel`: backup bytes and log lines. App settings are a JSON file in `app_config_dir()` (struct `Settings`, `#[serde(default)]` so new fields are backward compatible). Caches live in `app_cache_dir()`: the `statistics.sqlite3` snapshot and `highlights.json`. Stats and highlights therefore render offline.
+**Commands (`lib.rs`)** map one-to-one onto the sidebar views in `src/lib/views/`. They are async Tauri commands that return `Result<T, String>`; the String is shown to the user, so build it with `ssh::tr(en, es)`, which follows `Settings.lang` (set in `get_settings`/`set_settings`). Streaming uses `tauri::ipc::Channel`: backup bytes and log lines. App settings are a JSON file in `app_config_dir()` (struct `Settings`, `#[serde(default)]` so new fields are backward compatible). Caches live in `app_cache_dir()`: the `statistics.sqlite3` snapshot and `highlights.json`. Stats and highlights therefore render offline.
 
 **Device facts the code depends on:**
 - **Busybox userland.** `tar` supports `-T` and the device has `sqlite3`, but no `rsync`.
@@ -76,7 +76,8 @@ Extend that allowlist rather than bypassing it.
 
 **Frontend.**
 - **Shared state.** `src/lib/store.svelte.ts` (Svelte 5 runes) holds global state: connection status polled every 30 s, settings and backup progress. It also runs the auto-backup: one attempt per day, and `last_auto_backup` is saved before the run so a failure doesn't retry every poll. `explain()` maps ssh stderr to a user-facing hint.
-- **Typed wrappers.** `src/lib/api.ts` has the typed `invoke` wrappers and the formatters, which use Spanish decimal commas.
+- **Translations.** Every UI string is inline: `t('English', 'Español')` from `src/lib/i18n.svelte.ts`. `t` reads a `$state`, so text updates when the language changes; a list built from `t` must be `$derived`. Use `dec()` for decimals. Text written into the vault or sent to Claude (note headings, prompts) stays Spanish, because `merge()` matches those headings.
+- **Typed wrappers.** `src/lib/api.ts` has the typed `invoke` wrappers and the formatters, which follow the UI language (decimal comma and Spanish dates in Spanish).
 - **Views stay mounted.** `App.svelte` mounts a view the first time it is opened and then only toggles `hidden`, so switching is instant and keeps scroll and selection. Stats and Highlights are mounted hidden at launch to prefetch. They load their local cache first, then fetch once through an `$effect` that waits for `app.status`, and show `Loading.svelte` while empty. Log is the exception and remounts on each visit, because it streams `tail -f`. Its lines are appended once per animation frame.
 - **Uploads.** `Dropzone.svelte` (Tauri `onDragDropEvent` plus the dialog plugin, sequential queue) serves both Send books and Fonts. Both stay mounted, so a drop is ignored unless the zone is visible (`checkVisibility()`).
 

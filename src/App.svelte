@@ -1,7 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import { getCurrentWindow } from '@tauri-apps/api/window'
-  import { app, refreshStatus, loadSettings, maybeAutoBackup } from './lib/store.svelte'
+  import { app, refreshStatus, loadSettings, maybeAutoBackup, changeLang } from './lib/store.svelte'
+  import { i18n, t, dec } from './lib/i18n.svelte'
   import Backup from './lib/views/Backup.svelte'
   import Stats from './lib/views/Stats.svelte'
   import Highlights from './lib/views/Highlights.svelte'
@@ -12,16 +13,16 @@
   import Fonts from './lib/views/Fonts.svelte'
 
   // Lucide paths, inlined
-  const views = [
-    { id: 'backup', label: 'Respaldo', icon: 'M21 8v13H3V8M1 3h22v5H1zM10 12h4', C: Backup },
-    { id: 'stats', label: 'Lectura', icon: 'M3 3v18h18M7 16v-4M12 16V8M17 16v-7', C: Stats },
-    { id: 'hl', label: 'Subrayados', icon: 'm9 11-6 6v3h9l3-3M22 12l-4.6 4.6a2 2 0 0 1-2.8 0l-5.2-5.2a2 2 0 0 1 0-2.8L14 4', C: Highlights },
-    { id: 'send', label: 'Enviar libros', icon: 'M4 19.5V5a2 2 0 0 1 2-2h14v18H6.5a2.5 2.5 0 0 1 0-5H20M12 7v6M9 10l3-3 3 3', C: Send },
+  const views = $derived([
+    { id: 'backup', label: t('Backup', 'Respaldo'), icon: 'M21 8v13H3V8M1 3h22v5H1zM10 12h4', C: Backup },
+    { id: 'stats', label: t('Reading', 'Lectura'), icon: 'M3 3v18h18M7 16v-4M12 16V8M17 16v-7', C: Stats },
+    { id: 'hl', label: t('Highlights', 'Subrayados'), icon: 'm9 11-6 6v3h9l3-3M22 12l-4.6 4.6a2 2 0 0 1-2.8 0l-5.2-5.2a2 2 0 0 1 0-2.8L14 4', C: Highlights },
+    { id: 'send', label: t('Send books', 'Enviar libros'), icon: 'M4 19.5V5a2 2 0 0 1 2-2h14v18H6.5a2.5 2.5 0 0 1 0-5H20M12 7v6M9 10l3-3 3 3', C: Send },
     { id: 'patch', label: 'Patches', icon: 'm16 18 6-6-6-6M8 6l-6 6 6 6', C: Patches },
-    { id: 'cfg', label: 'Ajustes', icon: 'M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6', C: Config },
-    { id: 'log', label: 'Registro', icon: 'm4 17 6-6-6-6M12 19h8', C: Log },
-    { id: 'fonts', label: 'Fuentes', icon: 'M4 7V4h16v3M9 20h6M12 4v16', C: Fonts },
-  ]
+    { id: 'cfg', label: t('Settings', 'Ajustes'), icon: 'M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6', C: Config },
+    { id: 'log', label: t('Log', 'Registro'), icon: 'm4 17 6-6-6-6M12 19h8', C: Log },
+    { id: 'fonts', label: t('Fonts', 'Fuentes'), icon: 'M4 7V4h16v3M9 20h6M12 4v16', C: Fonts },
+  ])
   let current = $state('backup')
   // Views stay mounted once opened, so switching is instant and keeps scroll and selection.
   // Stats and highlights mount hidden at launch to prefetch. The log remounts each visit
@@ -29,7 +30,7 @@
   let seen = $state(new Set(['backup', 'stats', 'hl']))
   const open = (id: string) => { current = id; if (!seen.has(id)) seen = new Set([...seen, id]) }
 
-  const gb = (kb: number) => (kb / 1024 / 1024).toFixed(1).replace('.', ',')
+  const gb = (kb: number) => dec(kb / 1024 / 1024)
   const check = () => refreshStatus().then(maybeAutoBackup)
 
   onMount(() => {
@@ -44,7 +45,7 @@
 </script>
 
 <div class="win">
-  <nav class="side" aria-label="Secciones">
+  <nav class="side" aria-label={t('Sections', 'Secciones')}>
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div class="titlebar" onmousedown={drag}></div>
     <div class="brand">KOBridge</div>
@@ -52,27 +53,31 @@
       <button class="nav" aria-current={current === v.id} onclick={() => open(v.id)}>
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d={v.icon} /></svg>
         <span class="name">{v.label}</span>
-        {#if v.id === 'backup' && app.backup.busy}<span class="spin" aria-label="respaldando"></span>{/if}
+        {#if v.id === 'backup' && app.backup.busy}<span class="spin" aria-label={t('backing up', 'respaldando')}></span>{/if}
       </button>
     {/each}
 
     <div class="dev num">
       {#if app.checking && !app.status}
-        <b><span class="spin"></span>Buscando la Kindle…</b>
-        <span>Probando sus IPs conocidas por SSH</span>
+        <b><span class="spin"></span>{t('Looking for the Kindle…', 'Buscando la Kindle…')}</b>
+        <span>{t('Trying its known IPs over SSH', 'Probando sus IPs conocidas por SSH')}</span>
       {:else if app.status}
-        <b><span class="dot"></span>Kindle conectada</b>
+        <b><span class="dot"></span>{t('Kindle connected', 'Kindle conectada')}</b>
         <span>{app.status.host}</span>
-        <span>{#if app.status.battery !== null}Batería {app.status.battery} %{' · '}{/if}{gb(app.status.free_kb)} GB libres</span>
+        <span>{#if app.status.battery !== null}{t('Battery', 'Batería')} {app.status.battery} %{' · '}{/if}{gb(app.status.free_kb)} {t('GB free', 'GB libres')}</span>
       {:else}
-        <b><span class="dot off"></span>Kindle sin conexión</b>
+        <b><span class="dot off"></span>{t('Kindle offline', 'Kindle sin conexión')}</b>
         <span>{app.offlineHint}</span>
         <details>
-          <summary>Detalle</summary>
+          <summary>{t('Details', 'Detalle')}</summary>
           <code class="selectable">{app.offlineReason}</code>
         </details>
-        <button class="btn ghost retry" onclick={check}>Reintentar</button>
+        <button class="btn ghost retry" onclick={check}>{t('Retry', 'Reintentar')}</button>
       {/if}
+      <div class="lang" role="radiogroup" aria-label={t('Language', 'Idioma')}>
+        <button role="radio" aria-checked={i18n.lang === 'en'} onclick={() => changeLang('en')}>English</button>
+        <button role="radio" aria-checked={i18n.lang === 'es'} onclick={() => changeLang('es')}>Español</button>
+      </div>
     </div>
   </nav>
 
@@ -109,6 +114,10 @@
   summary { cursor: pointer }
   details code { display: block; margin-top: 4px; font-size: 10.5px; white-space: pre-wrap; word-break: break-word }
   .retry { margin-top: 6px; justify-self: start }
+  .lang { display: flex; gap: 2px; margin-top: 10px; padding: 2px; border: 1px solid var(--rule); border-radius: 7px; justify-self: start }
+  .lang button { appearance: none; border: 0; background: none; font: inherit; font-size: 11px; color: var(--ink-2); padding: 3px 8px; border-radius: 5px }
+  .lang button:hover { color: var(--ink) }
+  .lang button[aria-checked='true'] { background: var(--sheet); color: var(--ink); box-shadow: 0 1px 2px rgb(0 0 0 / .12) }
   main { position: relative; background: var(--sheet); min-width: 0; min-height: 0; display: flex; flex-direction: column }
   .pane { flex: 1; overflow: auto; padding: 44px 32px 28px }
 </style>

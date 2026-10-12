@@ -4,6 +4,7 @@
   import { open } from '@tauri-apps/plugin-dialog'
   import { api, errText, type Kind } from './api'
   import { app } from './store.svelte'
+  import { t } from './i18n.svelte'
 
   let { kind, exts, title, onsent }: { kind: Kind; exts: string[]; title: string; onsent?: () => void } = $props()
 
@@ -18,7 +19,7 @@
   function add(paths: string[]) {
     for (const path of paths) {
       const name = path.split('/').pop()!
-      jobs.unshift(ok(path) ? { path, name, state: 'waiting' } : { path, name, state: 'error', msg: 'formato no soportado' })
+      jobs.unshift(ok(path) ? { path, name, state: 'waiting' } : { path, name, state: 'error', msg: t('unsupported format', 'formato no soportado') })
     }
     pump()
   }
@@ -57,17 +58,17 @@
     const picked = await open({ multiple: true, filters: [{ name: title, extensions: exts }] })
     if (picked) add(Array.isArray(picked) ? picked : [picked])
   }
-  const label = { waiting: 'En cola', sending: 'Enviando…', done: 'Enviado', error: 'Error' }
+  const label = $derived({ waiting: t('Queued', 'En cola'), sending: t('Sending…', 'Enviando…'), done: t('Sent', 'Enviado'), error: 'Error' })
 </script>
 
 <div class="drop" class:over bind:this={zone}>
   {#if app.status}
-    <strong>Arrastrá {title} aquí</strong>
-    <span>o</span>
-    <button class="btn ghost" onclick={choose}>Elegir archivos…</button>
+    <strong>{t(`Drop ${title} here`, `Arrastrá ${title} aquí`)}</strong>
+    <span>{t('or', 'o')}</span>
+    <button class="btn ghost" onclick={choose}>{t('Choose files…', 'Elegir archivos…')}</button>
   {:else}
-    <strong>Kindle sin conexión</strong>
-    <span>Conectala para enviar archivos.</span>
+    <strong>{t('Kindle offline', 'Kindle sin conexión')}</strong>
+    <span>{t('Connect it to send files.', 'Conectala para enviar archivos.')}</span>
   {/if}
 </div>
 

@@ -4,6 +4,7 @@
 use crate::highlights::{Book, Note};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use crate::ssh::tr;
 
 /// Reading data from the stats snapshot, matched to a book by md5 (or title).
 #[derive(Default, Clone)]
@@ -170,16 +171,16 @@ pub fn event(line: &str) -> Option<Event> {
                 let file = || i["file_path"].as_str().and_then(|p| Path::new(p).file_name()).map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
                 let pat = || i["pattern"].as_str().unwrap_or("").to_string();
                 Event::Tool(match c["name"].as_str().unwrap_or("") {
-                    "Read" => format!("Leyendo {}", file()),
-                    "Edit" | "Write" => format!("Editando {}", file()),
-                    "Glob" => format!("Buscando notas {}", pat()),
-                    "Grep" => format!("Buscando \"{}\"", pat()),
+                    "Read" => tr(format!("Reading {}", file()), format!("Leyendo {}", file())),
+                    "Edit" | "Write" => tr(format!("Editing {}", file()), format!("Editando {}", file())),
+                    "Glob" => tr(format!("Finding notes {}", pat()), format!("Buscando notas {}", pat())),
+                    "Grep" => tr(format!("Searching \"{}\"", pat()), format!("Buscando \"{}\"", pat())),
                     other => other.to_string(),
                 })
             })
             .last(),
         "result" if v["is_error"].as_bool() == Some(true) || v["subtype"] != "success" =>
-            Some(Event::Failed(v["result"].as_str().unwrap_or("Claude terminó con error").to_string())),
+            Some(Event::Failed(v["result"].as_str().map(str::to_string).unwrap_or_else(|| tr("Claude exited with an error", "Claude terminó con error")))),
         "result" => Some(Event::Done),
         _ => None,
     }
@@ -269,7 +270,7 @@ mod tests {
     #[test]
     fn parses_stream_events() {
         let read = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/v/KOReader/Libro.md"}}]}}"#;
-        assert!(matches!(event(read), Some(Event::Tool(t)) if t == "Leyendo Libro.md"));
+        assert!(matches!(event(read), Some(Event::Tool(t)) if t == "Reading Libro.md"));
         assert!(matches!(event(r#"{"type":"result","subtype":"success","is_error":false,"result":"ok"}"#), Some(Event::Done)));
         assert!(matches!(event(r#"{"type":"result","subtype":"error_max_turns","is_error":true}"#), Some(Event::Failed(_))));
         assert!(event(r#"{"type":"system","subtype":"init"}"#).is_none());
