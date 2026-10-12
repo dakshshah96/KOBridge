@@ -1,3 +1,4 @@
+mod anki;
 mod highlights;
 mod lua;
 mod obsidian;
@@ -402,6 +403,69 @@ async fn enrich_one(claude: &Path, root: &Path, note: &Path, model: &str, job: &
     result.unwrap_or_else(|| Err(stderr.trim().lines().last().map(str::to_string).unwrap_or(format!("claude terminó con {status}"))))
 }
 
+/// Asks Claude for cards per book and writes one Anki text file to ~/Downloads; returns its path.
+#[tauri::command]
+async fn anki_start(app: AppHandle, job: State<'_, Enrich>, books: Vec<highlights::Book>, model: String, today: String,
+                    events: Channel<EnrichEvent>) -> Res<Option<String>> {
+    if !obsidian::MODELS.contains(&model.as_str()) { return Err(format!("modelo desconocido: {model}")); }
+    if today.len() != 10 || !today.chars().all(|c| c.is_ascii_digit() || c == '-') { return Err("fecha inválida".into()); }
+    let claude = obsidian::find_claude(&home()).ok_or("No encontré Claude Code. Instalalo con `brew install --cask claude-code`.")?;
+    // an empty cwd, so Claude Code picks up no project CLAUDE.md
+    let cwd = app.path().app_cache_dir().map_err(e)?.join("anki");
+    std::fs::create_dir_all(&cwd).map_err(e)?;
+    job.cancel.store(false, SeqCst);
+    let send = |book: &str, kind, text: String| { let _ = events.send(EnrichEvent { book: book.into(), kind, text }); };
+    let mut done = vec![];
+    for b in &books {
+        if job.cancel.load(SeqCst) { break; }
+        send(&b.title, "start", String::new());
+        match anki_one(&claude, &cwd, b, &model, &job).await {
+            Ok(cards) if cards.is_empty() => send(&b.title, "error", "Claude no escribió tarjetas".into()),
+            Ok(cards) => { send(&b.title, "done", format!("{} tarjetas", cards.len())); done.push((b, cards)); }
+            Err(err) => send(&b.title, "error", err),
+        }
+    }
+    if done.is_empty() { return Ok(None); }
+    // never overwrite a file from an earlier run that may not be imported yet
+    let dl = home().join("Downloads");
+    let p = (1..).map(|n| dl.join(if n == 1 { format!("KOReader Anki {today}.txt") } else { format!("KOReader Anki {today} ({n}).txt") }))
+        .find(|p| !p.exists()).unwrap();
+    std::fs::write(&p, anki::tsv(&done)).map_err(|err| format!("No pude escribir {}: {err}", p.display()))?;
+    Ok(Some(p.to_string_lossy().into()))
+}
+
+async fn anki_one(claude: &Path, cwd: &Path, b: &highlights::Book, model: &str, job: &Enrich) -> Res<Vec<anki::Card>> {
+    let mut child = tokio::process::Command::new(claude)
+        .current_dir(cwd)
+        .arg("-p").arg(anki::prompt(b))
+        .args(["--model", model, "--output-format", "json", "--json-schema", anki::SCHEMA, "--tools", "",
+               "--strict-mcp-config", "--setting-sources", "project", "--no-session-persistence", "--disable-slash-commands"])
+        .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn().map_err(e)?;
+    let mut out = child.stdout.take().ok_or("sin salida")?;
+    let mut err = child.stderr.take().ok_or("sin salida")?;
+    let stderr = tauri::async_runtime::spawn(async move { let mut s = String::new(); let _ = err.read_to_string(&mut s).await; s });
+    *job.child.lock().await = Some(child);
+    let mut stdout = String::new();
+    let _ = out.read_to_string(&mut stdout).await;
+    let child = job.child.lock().await.take();
+    let (Some(mut child), false) = (child, job.cancel.load(SeqCst)) else { return Err("Cancelado".into()) };
+    let status = child.wait().await.map_err(e)?;
+    if stdout.trim().is_empty() {
+        let stderr = stderr.await.unwrap_or_default();
+        return Err(stderr.trim().lines().last().map(str::to_string).unwrap_or(format!("claude terminó con {status}")));
+    }
+    anki::parse(&stdout, &b.notes)
+}
+
+/// Opens the file in Anki, which shows its import dialog.
+#[tauri::command]
+fn anki_open(path: String) -> Res<()> {
+    let ok = std::process::Command::new("open").args(["-a", "Anki", &path]).status().map_err(e)?.success();
+    if ok { Ok(()) } else { Err("No encontré Anki. Instalalo desde apps.ankiweb.net y abrilo una vez para crear tu perfil.".into()) }
+}
+
 #[tauri::command]
 async fn enrich_stop(job: State<'_, Enrich>) -> Res<()> {
     job.cancel.store(true, SeqCst);
@@ -536,7 +600,7 @@ pub fn run() {
             get_settings, set_settings, status,
             backup_run, backup_list, backup_size, reveal,
             stats,
-            highlights, highlights_export, obsidian_vaults, obsidian_create_vault, enrich_start, enrich_stop,
+            highlights, highlights_export, obsidian_vaults, obsidian_create_vault, enrich_start, enrich_stop, anki_start, anki_open,
             send_file, list_dir,
             read_remote, write_remote, rename_remote, delete_remote,
             log_start, log_stop, screen_message,
@@ -668,6 +732,26 @@ mod live {
             std::fs::write(p, first).unwrap();
         }
         println!("{} notes, {} highlights in {}", set.books.len(), set.books.iter().map(|b| b.notes.len()).sum::<usize>(), dir.display());
+    }
+
+    /// Claude Code and the highlights cache: `cargo test claude_anki -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn claude_anki() {
+        tauri::async_runtime::block_on(async {
+            let cache = home().join("Library/Caches/com.danisnowman.kobridge/highlights.json");
+            let set: HighlightSet = serde_json::from_slice(&std::fs::read(cache).expect("cache")).unwrap();
+            let b = set.books.iter().filter(|b| b.notes.len() >= 3).min_by_key(|b| b.notes.len()).expect("a book with 3+ highlights");
+            let cwd = std::env::temp_dir().join("kob-anki");
+            std::fs::create_dir_all(&cwd).unwrap();
+            let t = std::time::Instant::now();
+            let cards = anki_one(&obsidian::find_claude(&home()).expect("claude"), &cwd, b, "haiku", &Enrich::default()).await.expect("cards");
+            let tsv = anki::tsv(&[(b, cards)]);
+            println!("{} ({} subrayados), {:.1} s\n{tsv}", b.title, b.notes.len(), t.elapsed().as_secs_f64());
+            let rows: Vec<_> = tsv.lines().filter(|l| !l.starts_with('#')).collect();
+            assert!(!rows.is_empty());
+            assert!(rows.iter().all(|r| r.split('\t').count() == 5 && r.starts_with("kob-")));
+        });
     }
 
     /// Needs Claude Code, not the Kindle: `cargo test claude_enrich -- --ignored --nocapture`

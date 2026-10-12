@@ -2,7 +2,7 @@
   import { onMount } from 'svelte'
   import { open } from '@tauri-apps/plugin-dialog'
   import Loading from '../Loading.svelte'
-  import { api, errText, fmtWhen, today, type HighlightSet, type HBook, type Model } from '../api'
+  import { api, errText, fmtWhen, today, type HighlightSet, type HBook, type Model, type EnrichEvent } from '../api'
   import { app, saveSettings } from '../store.svelte'
 
   let set = $state<HighlightSet>({ books: [], errors: [], fetched_at: 0 })
@@ -10,7 +10,7 @@
   let phase = $state<'cache' | 'fetching' | 'idle'>('cache')
   let exporting = $state(false)
   let fresh = $state('')
-  let msg = $state<{ kind: 'ok' | 'bad'; text: string; reveal?: boolean } | null>(null)
+  let msg = $state<{ kind: 'ok' | 'bad'; text: string; reveal?: boolean; anki?: string } | null>(null)
 
   const count = (s: HighlightSet) => s.books.reduce((n, b) => n + b.notes.length, 0)
 
@@ -92,28 +92,33 @@
 
   type Job = { title: string; state: 'waiting' | 'running' | 'done' | 'error'; text: string }
   let jobs = $state<Job[]>([])
-  let running = $state(false)
+  let running = $state<'' | 'enrich' | 'anki'>('')
 
-  async function enrich() {
+  async function run(kind: 'enrich' | 'anki') {
     const books: HBook[] = picked.length ? set.books.filter((b) => picked.includes(b.sidecar)) : book ? [book] : []
     if (!books.length) return
     jobs = books.map((b) => ({ title: b.title, state: 'waiting', text: '' }))
-    running = true
+    running = kind
     msg = null
+    const onEvent = (ev: EnrichEvent) => {
+      const j = jobs.find((j) => j.title === ev.book && (j.state === 'waiting' || j.state === 'running'))
+      if (!j) return
+      if (ev.kind === 'start') { j.state = 'running'; j.text = kind === 'anki' ? 'Escribiendo tarjetas' : 'Abriendo la nota' }
+      else if (ev.kind === 'tool') j.text = ev.text
+      else if (ev.kind === 'done') { j.state = 'done'; j.text = ev.text }
+      else { j.state = 'error'; j.text = ev.text }
+    }
     try {
-      await api.enrichStart(books, model, today(), (ev) => {
-        const j = jobs.find((j) => j.title === ev.book && (j.state === 'waiting' || j.state === 'running'))
-        if (!j) return
-        if (ev.kind === 'start') { j.state = 'running'; j.text = 'Abriendo la nota' }
-        else if (ev.kind === 'tool') j.text = ev.text
-        else if (ev.kind === 'done') { j.state = 'done'; j.text = '' }
-        else { j.state = 'error'; j.text = ev.text }
-      })
+      if (kind === 'enrich') await api.enrichStart(books, model, today(), onEvent)
+      else {
+        const file = await api.ankiStart(books, model, today(), onEvent)
+        if (file) msg = { kind: 'ok', text: `Guardé las tarjetas en ${file}. Anki las importa al mazo KOReader y actualiza las que ya tenías.`, anki: file }
+      }
     } catch (e) {
       msg = { kind: 'bad', text: errText(e) }
     } finally {
       for (const j of jobs) if (j.state === 'waiting' || j.state === 'running') { j.state = 'error'; j.text = 'Cancelado' }
-      running = false
+      running = ''
     }
   }
   const jobLabel = { waiting: 'En cola', running: 'Trabajando…', done: 'Listo', error: 'Error' }
@@ -149,6 +154,8 @@
     <div class="banner {msg.kind}">
       <span class="selectable">{msg.text}</span>
       <span class="row">
+        {#if msg.anki}{@const f = msg.anki}<button class="link" onclick={() => api.ankiOpen(f).catch((e) => (msg = { kind: 'bad', text: errText(e) }))}>Abrir en Anki</button>
+          <button class="link" onclick={() => api.reveal(f)}>Mostrar en Finder</button>{/if}
         {#if msg.reveal && app.settings}<button class="link" onclick={() => api.reveal(app.settings!.vault_dir)}>Mostrar en Finder</button>{/if}
         <button class="link" onclick={() => (msg = null)}>Cerrar</button>
       </span>
@@ -157,20 +164,23 @@
   {#if set.books.length}
     <div class="claude">
       <div class="intro">
-        <p class="label">Enriquecer con Claude</p>
-        <p class="sub">Agrega un resumen, etiquetas y enlaces a tus otras notas de la bóveda.</p>
+        <p class="label">Claude</p>
+        <p class="sub">Enriquecer agrega a la nota un resumen, etiquetas y enlaces a tus otras notas. Tarjetas escribe preguntas y respuestas para Anki.</p>
       </div>
       <div class="models" role="radiogroup" aria-label="Modelo de Claude">
         {#each MODELS as m (m.id)}
-          <button class="model" role="radio" aria-checked={model === m.id} disabled={running} onclick={() => saveSettings({ ai_model: m.id })}>
+          <button class="model" role="radio" aria-checked={model === m.id} disabled={!!running} onclick={() => saveSettings({ ai_model: m.id })}>
             <strong>{m.name}</strong><span>{m.hint}</span>
           </button>
         {/each}
       </div>
       <div class="row">
         {#if running}<button class="btn ghost" onclick={() => api.enrichStop()}>Cancelar</button>{/if}
-        <button class="btn" disabled={running || (!picked.length && !book)} onclick={enrich}>
-          {running ? 'Enriqueciendo…' : picked.length ? `Enriquecer ${picked.length} ${picked.length === 1 ? 'libro' : 'libros'}` : 'Enriquecer este libro'}
+        <button class="btn ghost" disabled={!!running || (!picked.length && !book)} onclick={() => run('anki')}>
+          {running === 'anki' ? 'Escribiendo…' : 'Tarjetas Anki'}
+        </button>
+        <button class="btn" disabled={!!running || (!picked.length && !book)} onclick={() => run('enrich')}>
+          {running === 'enrich' ? 'Enriqueciendo…' : picked.length ? `Enriquecer ${picked.length} ${picked.length === 1 ? 'libro' : 'libros'}` : 'Enriquecer este libro'}
         </button>
       </div>
     </div>

@@ -72,6 +72,8 @@ Extend that allowlist rather than bypassing it.
 
 **Claude enrichment.** `enrich_start` runs `claude -p` once per note with the vault root as cwd, `--tools Read,Glob,Grep,Edit --permission-mode acceptEdits --strict-mcp-config --setting-sources project`. Don't use `--bare`: it disables the OAuth login. The model is one of `haiku`, `sonnet`, `opus`, `fable` (validated server side, default `sonnet` in `Settings.ai_model`). Progress comes from `--output-format stream-json`. Claude writes `## Resumen` and `## Relacionado` between the author line and the first chapter, so appended quotes stay below them. `cargo test claude_enrich -- --ignored --nocapture` runs it with Haiku on a temp vault (~12 s).
 
+**Anki cards (`anki.rs`).** `anki_start` runs `claude -p --output-format json --json-schema anki::SCHEMA --tools ""` once per book, from an empty dir in the app cache so no project `CLAUDE.md` loads. The cards come back in the result's `structured_output.cards`, each with `source` (1-based highlight number). Each card's GUID is `<block_id>-<n>`, so re-importing updates the same Anki notes; it depends on the same FNV hash as the Obsidian ids. The output is one tab-separated text file in `~/Downloads` with Anki's `#guid column`, `#deck column` and `#tags column` headers (docs.ankiweb.net/importing/text-files.html). `anki_open` runs `open -a Anki <file>`. `enrich_stop` also cancels this job. `cargo test claude_anki -- --ignored --nocapture` runs it with Haiku on the smallest cached book with 3+ highlights (~12 s).
+
 **Frontend.**
 - **Shared state.** `src/lib/store.svelte.ts` (Svelte 5 runes) holds global state: connection status polled every 30 s, settings and backup progress. It also runs the auto-backup: one attempt per day, and `last_auto_backup` is saved before the run so a failure doesn't retry every poll. `explain()` maps ssh stderr to a user-facing hint.
 - **Typed wrappers.** `src/lib/api.ts` has the typed `invoke` wrappers and the formatters, which use Spanish decimal commas.
@@ -94,4 +96,4 @@ Extend that allowlist rather than bypassing it.
 
 ## Planned
 
-A read-only Calibre library view (read `metadata.db`, compare with the Kindle, send books, and register sent books in the device's `.metadata.calibre` so Calibre sees them) is planned inside KOBridge with its own spec. A Calibre device plugin over SSH is a separate project. Anki cards from highlights are also planned with their own spec.
+A read-only Calibre library view (read `metadata.db`, compare with the Kindle, send books, and register sent books in the device's `.metadata.calibre` so Calibre sees them) is planned inside KOBridge with its own spec. A Calibre device plugin over SSH is a separate project.

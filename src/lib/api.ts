@@ -40,6 +40,12 @@ export const api = {
     events.onmessage = onEvent
     return invoke<void>('enrich_start', { books, model, today, events })
   },
+  ankiStart: (books: HBook[], model: Model, today: string, onEvent: (e: EnrichEvent) => void) => {
+    const events = new Channel<EnrichEvent>()
+    events.onmessage = onEvent
+    return invoke<string | null>('anki_start', { books, model, today, events })
+  },
+  ankiOpen: (path: string) => invoke<void>('anki_open', { path }),
   enrichStop: () => invoke<void>('enrich_stop'),
   sendFile: (path: string, kind: Kind) => invoke<string>('send_file', { path, kind }),
   listDir: (kind: Kind) => invoke<Entry[]>('list_dir', { kind }),
