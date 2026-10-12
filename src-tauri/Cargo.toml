@@ -3,6 +3,7 @@ name = "kobridge"
 version = "0.2.0"
 description = "KOReader on a Kindle, managed over SSH"
 authors = ["Daniel Hernández"]
+license = "PolyForm-Noncommercial-1.0.0"
 edition = "2024"
 rust-version = "1.90"
 

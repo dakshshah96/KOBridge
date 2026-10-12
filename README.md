@@ -23,6 +23,7 @@
   <a href="https://github.com/danihrndzld/KOBridge/releases"><img src="https://img.shields.io/github/downloads/danihrndzld/KOBridge/total?color=1c1c1c" alt="Downloads"></a>
   <a href="#what-you-need"><img src="https://img.shields.io/badge/macOS-Apple%20Silicon-black" alt="macOS on Apple Silicon"></a>
   <a href="https://tauri.app"><img src="https://img.shields.io/badge/built%20with-Tauri%202-24c8db" alt="Built with Tauri 2"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-PolyForm%20Noncommercial-blue" alt="License PolyForm Noncommercial 1.0.0"></a>
 </p>
 
 <p align="center">
@@ -198,3 +199,9 @@ cargo test -- --ignored --nocapture     # tests against a real Kindle and Claude
 ```
 
 The `--ignored` tests use your Kindle over SSH. They create test files in `/tmp` and in `koreader/patches` on the Kindle, and they delete them when they finish.
+
+## License
+
+KOBridge uses the [PolyForm Noncommercial License 1.0.0](LICENSE). You can read, change and share the source code, and you can use the app for any purpose that isn't commercial, e.g., personal reading, study, hobby projects, schools and charities. Selling the app or using it inside a commercial product needs separate permission, so open an issue if you want to ask.
+
+Copyright 2026 Daniel Hernández.
