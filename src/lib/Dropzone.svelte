@@ -11,6 +11,7 @@
   let jobs = $state<Job[]>([])
   let over = $state(false)
   let running = false
+  let zone: HTMLDivElement
 
   const ok = (p: string) => exts.includes(p.split('.').pop()?.toLowerCase() ?? '')
 
@@ -45,6 +46,7 @@
   onMount(() => {
     const un = getCurrentWebview().onDragDropEvent((e) => {
       const t = e.payload.type
+      if (!zone?.checkVisibility()) return
       over = t === 'enter' || t === 'over'
       if (t === 'drop' && app.status) add(e.payload.paths)
     })
@@ -58,7 +60,7 @@
   const label = { waiting: 'En cola', sending: 'Enviando…', done: 'Enviado', error: 'Error' }
 </script>
 
-<div class="drop" class:over>
+<div class="drop" class:over bind:this={zone}>
   {#if app.status}
     <strong>Arrastrá {title} aquí</strong>
     <span>o</span>

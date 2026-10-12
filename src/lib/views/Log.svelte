@@ -11,14 +11,23 @@
   let box: HTMLPreElement
   let stick = true
 
+  let pending: string[] = []
+  let frame = 0
+  async function flush() {
+    frame = 0
+    const next = lines.concat(pending)
+    pending = []
+    lines = next.length > MAX ? next.slice(-MAX) : next
+    if (stick) { await tick(); box?.scrollTo(0, box.scrollHeight) }
+  }
+
   async function start() {
     error = ''
     lines = []
     try {
-      await api.logStart(async (l) => {
-        lines.push(l)
-        if (lines.length > MAX) lines.splice(0, lines.length - MAX)
-        if (stick) { await tick(); box?.scrollTo(0, box.scrollHeight) }
+      await api.logStart((l) => {
+        pending.push(l)
+        frame ||= requestAnimationFrame(flush)
       })
       following = true
     } catch (e) {
@@ -28,7 +37,7 @@
   const stop = () => { following = false; api.logStop() }
   let started = false
   $effect(() => { if (app.status && !started) { started = true; start() } })
-  onDestroy(() => api.logStop())
+  onDestroy(() => { cancelAnimationFrame(frame); api.logStop() })
 
   const shown = $derived(filter ? lines.filter((l) => l.toLowerCase().includes(filter.toLowerCase())) : lines)
   const level = (l: string) => (/ (ERROR|FATAL)\b|stack traceback/.test(l) ? 'err' : / WARN\b/.test(l) ? 'warn' : '')

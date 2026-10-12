@@ -1,9 +1,11 @@
-//! Everything goes through the system `ssh kindle`, so ~/.ssh/config decides the IP
-//! (Match exec probes), the key and the Keychain passphrase. ControlMaster keeps one
-//! TCP connection warm so each command costs a round trip, not a handshake.
+//! Everything goes through the system ssh, so ~/.ssh/config decides the IP, the key and
+//! the known_hosts entry. `ssh kindle` evaluates every `Match exec` probe in that config
+//! on each call (~2 s with two dead IPs), so `resolve()` runs `ssh -G kindle` once and
+//! later calls target the resolved IP with explicit options (~50 ms on a warm mux).
 
 use std::path::Path;
 use std::process::Stdio;
+use std::sync::Mutex;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, Command};
 
@@ -11,17 +13,75 @@ pub const HOST: &str = "kindle";
 
 pub type Res<T> = Result<T, String>;
 
+pub const UNREACHABLE: &str = "La Kindle no responde en ninguna de sus IPs conocidas.";
+
+/// Explicit ssh args ending with the destination IP, or None to use the `kindle` alias.
+static TARGET: Mutex<Option<Vec<String>>> = Mutex::new(None);
+
+pub fn target() -> Option<Vec<String>> { TARGET.lock().unwrap().clone() }
+pub fn set_target(t: Option<Vec<String>>) { *TARGET.lock().unwrap() = t; }
+
+/// Host shown in the UI: the cached IP, or the alias when unresolved.
+pub fn host() -> String {
+    target().and_then(|t| t.last().cloned()).unwrap_or_else(|| HOST.into())
+}
+
+/// Connection-level failures mean the cached IP may be stale (network switch, DHCP).
+pub fn is_connect_error(msg: &str) -> bool {
+    ["timed out", "No route to host", "Connection refused", "Network is unreachable",
+     "Host key verification failed", "Could not resolve", "Host is down"]
+        .iter().any(|p| msg.contains(p))
+}
+
+/// Ask ssh which host/port/user/key `kindle` maps to right now (runs the Match probes once).
+pub async fn resolve() -> Res<Option<Vec<String>>> {
+    let out = Command::new("/usr/bin/ssh").args(["-G", HOST]).output().await.map_err(|e| e.to_string())?;
+    parse_g(&String::from_utf8_lossy(&out.stdout))
+}
+
+fn parse_g(text: &str) -> Res<Option<Vec<String>>> {
+    let mut args: Vec<String> = Vec::new();
+    let mut host = String::new();
+    let mut alias = false;
+    for line in text.lines() {
+        let Some((k, v)) = line.split_once(' ') else { continue };
+        match k {
+            "hostname" => host = v.to_string(),
+            "port" => args.extend(["-p".into(), v.into()]),
+            "user" => args.extend(["-l".into(), v.into()]),
+            "identityfile" => args.extend(["-i".into(), v.into()]),
+            "identitiesonly" | "userknownhostsfile" | "addkeystoagent" => args.extend(["-o".into(), format!("{k}={v}")]),
+            "hostkeyalias" => { alias = true; args.extend(["-o".into(), format!("HostKeyAlias={v}")]) }
+            // a proxied host can't be reached by IP; keep the alias
+            "proxycommand" | "proxyjump" if v != "none" => return Ok(None),
+            _ => {}
+        }
+    }
+    if host.is_empty() || host == HOST {
+        return Err(UNREACHABLE.into()); // every Match probe failed
+    }
+    if !alias {
+        // keep the known_hosts entry the alias would have used
+        args.extend(["-o".into(), format!("HostKeyAlias={host}")]);
+    }
+    args.extend(["-o".into(), "UseKeychain=yes".into(), host]);
+    Ok(Some(args))
+}
+
 fn ssh() -> Command {
     let mut c = Command::new("/usr/bin/ssh");
     c.args([
         "-o", "BatchMode=yes",
-        "-o", "ConnectTimeout=5",
+        "-o", "ConnectTimeout=4",
         "-o", "ServerAliveInterval=10",
         "-o", "ControlMaster=auto",
         "-o", "ControlPath=~/.ssh/kob-%C",
-        "-o", "ControlPersist=120",
-        HOST,
+        "-o", "ControlPersist=600",
     ]);
+    match target() {
+        Some(t) => { c.args(t); }
+        None => { c.arg(HOST); }
+    }
     c.stdin(Stdio::null()).kill_on_drop(true);
     c
 }
@@ -33,6 +93,7 @@ pub fn sq(s: &str) -> String {
 
 fn fail(stderr: &[u8], code: Option<i32>) -> String {
     let msg = String::from_utf8_lossy(stderr).trim().to_string();
+    if is_connect_error(&msg) { set_target(None); }
     if msg.is_empty() { format!("ssh terminó con código {}", code.unwrap_or(-1)) } else { msg }
 }
 
@@ -111,16 +172,27 @@ pub fn stream(cmd: &str) -> Res<Child> {
     ssh().arg(cmd).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().map_err(|e| e.to_string())
 }
 
-/// The IP ssh would use right now (runs the Match exec probes).
-pub async fn resolved_host() -> Option<String> {
-    let out = Command::new("/usr/bin/ssh").args(["-G", HOST]).output().await.ok()?;
-    String::from_utf8_lossy(&out.stdout).lines()
-        .find_map(|l| l.strip_prefix("hostname ").map(str::to_string))
-}
-
 #[cfg(test)]
 mod tests {
-    use super::sq;
+    use super::*;
+
+    #[test]
+    fn resolves_explicit_target() {
+        let g = "user root\nhostname 192.168.0.38\nport 2222\nidentitiesonly yes\nhostkeyalias kindle\n\
+                 identityfile ~/.ssh/id_ed25519_kindle\nuserknownhostsfile /a /b\nproxycommand none\n";
+        let t = parse_g(g).unwrap().unwrap();
+        assert_eq!(t.last().unwrap(), "192.168.0.38");
+        for a in ["2222", "root", "~/.ssh/id_ed25519_kindle", "HostKeyAlias=kindle", "userknownhostsfile=/a /b", "UseKeychain=yes"] {
+            assert!(t.iter().any(|x| x == a), "missing {a}");
+        }
+        // no alias in config: pin known_hosts to the IP the alias would have used
+        let t = parse_g("hostname 10.0.0.5\nport 22\n").unwrap().unwrap();
+        assert!(t.iter().any(|x| x == "HostKeyAlias=10.0.0.5"));
+        // every Match probe failed
+        assert_eq!(parse_g("hostname kindle\nport 2222\n").unwrap_err(), UNREACHABLE);
+        // proxied hosts keep the alias
+        assert_eq!(parse_g("hostname 10.0.0.5\nproxyjump bastion\n").unwrap(), None);
+    }
     #[test]
     fn quotes_single_quotes() {
         assert_eq!(sq("it's"), r"'it'\''s'");

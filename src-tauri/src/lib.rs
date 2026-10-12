@@ -29,6 +29,7 @@ struct Settings {
     backup_books: bool,
     auto_backup: bool,
     last_auto_backup: String,
+    last_target: Option<Vec<String>>,
 }
 
 impl Default for Settings {
@@ -39,6 +40,7 @@ impl Default for Settings {
             backup_books: false,
             auto_backup: true,
             last_auto_backup: String::new(),
+            last_target: None,
         }
     }
 }
@@ -73,18 +75,46 @@ struct Status {
     reader_running: bool,
 }
 
+const STATUS_CMD: &str = "cat /sys/class/power_supply/*bat*/capacity 2>/dev/null | head -n1; echo; \
+     df -k /mnt/us | tail -n1; ps | grep -q '[r]eader.lua' && echo up || echo down";
+
+async fn ensure_target() -> Res<()> {
+    if ssh::target().is_none() {
+        ssh::set_target(ssh::resolve().await?);
+    }
+    Ok(())
+}
+
+/// Status over the cached IP; on a connect error re-resolve once (network switch, DHCP).
 #[tauri::command]
-async fn status() -> Res<Status> {
-    let out = ssh::run(
-        "cat /sys/class/power_supply/*bat*/capacity 2>/dev/null | head -n1; echo; \
-         df -k /mnt/us | tail -n1; ps | grep -q '[r]eader.lua' && echo up || echo down",
-    ).await?;
+async fn status(app: AppHandle) -> Res<Status> {
+    let st = probe().await?;
+    // remember the target so the next launch connects without the Match probes
+    let target = ssh::target();
+    let mut s = get_settings(app.clone());
+    if s.last_target != target {
+        s.last_target = target;
+        let _ = set_settings(app, s);
+    }
+    Ok(st)
+}
+
+async fn probe() -> Res<Status> {
+    let had_target = ssh::target().is_some();
+    ensure_target().await?;
+    let out = match ssh::run(STATUS_CMD).await {
+        Err(err) if had_target && ssh::is_connect_error(&err) => {
+            ensure_target().await?;
+            ssh::run(STATUS_CMD).await?
+        }
+        r => r?,
+    };
     let lines: Vec<&str> = out.lines().filter(|l| !l.trim().is_empty()).collect();
     let battery = lines.first().and_then(|l| l.trim().parse().ok());
     let df = lines.iter().find(|l| l.ends_with("/mnt/us")).map(|l| l.split_whitespace().collect::<Vec<_>>()).unwrap_or_default();
     let n = |i: usize| df.get(i).and_then(|v| v.parse().ok()).unwrap_or(0);
     Ok(Status {
-        host: ssh::resolved_host().await.unwrap_or_default(),
+        host: ssh::host(),
         battery,
         total_kb: n(1),
         free_kb: n(3),
@@ -241,7 +271,7 @@ struct Entry { name: String, size: u64 }
 async fn list_dir(kind: String) -> Res<Vec<Entry>> {
     let dir = remote_dir(&kind)?;
     let out = ssh::run(&format!(
-        "cd {} 2>/dev/null || exit 0; for f in *; do [ -f \"$f\" ] && echo \"$(wc -c < \"$f\") $f\"; done", sq(dir))).await?;
+        "cd {} 2>/dev/null && stat -c '%s %n' * 2>/dev/null; true", sq(dir))).await?;
     let mut v: Vec<Entry> = out.lines().filter_map(|l| {
         let (size, name) = l.trim().split_once(' ')?;
         Some(Entry { name: name.to_string(), size: size.parse().ok()? })
@@ -335,6 +365,10 @@ async fn screen_message(text: String) -> Res<()> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .setup(|app| {
+            ssh::set_target(get_settings(app.handle().clone()).last_target);
+            Ok(())
+        })
         .manage(LogTail::default())
         .invoke_handler(tauri::generate_handler![
             get_settings, set_settings, status,
@@ -374,7 +408,7 @@ mod live {
     #[ignore]
     fn kindle_end_to_end() {
         tauri::async_runtime::block_on(async {
-            let s = status().await.expect("status");
+            let s = probe().await.expect("status");
             println!("host {} battery {:?} free {} MB reader {}", s.host, s.battery, s.free_kb / 1024, s.reader_running);
 
             let dump = ssh::run(highlights::FETCH_CMD).await.expect("fetch");
@@ -436,7 +470,7 @@ mod live {
             assert!(!ssh::run(&format!("ls {KO}/patches")).await.unwrap().contains("kob-test"));
 
             // settings.reader.lua is refused while KOReader runs
-            if status().await.unwrap().reader_running {
+            if probe().await.unwrap().reader_running {
                 assert!(write_remote(format!("{KO}/settings.reader.lua"), String::new()).await.is_err());
             }
 

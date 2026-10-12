@@ -7,7 +7,7 @@ use std::path::Path;
 pub const MARK: &str = "@@KOB@@ ";
 
 /// One ssh call: every sidecar that has annotations, each prefixed by a marker line.
-pub const FETCH_CMD: &str = r#"find /mnt/us/books /mnt/us/documents -path '*.sdr/metadata.*.lua' ! -path '*/dictionaries/*' \
+pub const FETCH_CMD: &str = r#"find /mnt/us/books /mnt/us/documents -name dictionaries -prune -o -path '*.sdr/metadata.*.lua' \
  -exec grep -l '\["annotations"\] = {$' {} + 2>/dev/null | while IFS= read -r f; do printf '@@KOB@@ %s\n' "$f"; cat "$f"; echo; done"#;
 
 #[derive(Serialize, Deserialize, Clone)]

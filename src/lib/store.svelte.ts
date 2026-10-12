@@ -11,7 +11,7 @@ export const app = $state({
 
 /** Turn ssh's stderr into a next step; keep the raw text for details. */
 function explain(raw: string) {
-  if (/resolve hostname kindle|No route to host|Network is unreachable/i.test(raw))
+  if (/ninguna de sus IPs|resolve hostname kindle|No route to host|Network is unreachable/i.test(raw))
     return 'La Kindle no responde en ninguna de sus IPs conocidas. Si la Terminal sí llega, dale permiso a KOBridge en Ajustes del Sistema → Privacidad y seguridad → Red local.'
   if (/timed out/i.test(raw)) return 'La Kindle no respondió a tiempo. Puede que su Wi-Fi esté dormido: tocá la pantalla y reintentá.'
   if (/Connection refused/i.test(raw)) return 'La Kindle está en la red pero el servidor SSH de KOReader está apagado.'

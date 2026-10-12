@@ -23,12 +23,18 @@
     { id: 'fonts', label: 'Fuentes', icon: 'M4 7V4h16v3M9 20h6M12 4v16', C: Fonts },
   ]
   let current = $state('backup')
-  const View = $derived(views.find((v) => v.id === current)!.C)
+  // Views stay mounted once opened, so switching is instant and keeps scroll and selection.
+  // Stats and highlights mount hidden at launch to prefetch. The log remounts each visit
+  // because it streams tail -f.
+  let seen = $state(new Set(['backup', 'stats', 'hl']))
+  const open = (id: string) => { current = id; if (!seen.has(id)) seen = new Set([...seen, id]) }
 
   const gb = (kb: number) => (kb / 1024 / 1024).toFixed(1).replace('.', ',')
   const check = () => refreshStatus().then(maybeAutoBackup)
 
   onMount(() => {
+    // the window starts hidden (tauri.conf.json) so it never flashes an unstyled frame
+    getCurrentWindow().show()
     loadSettings().then(check)
     const t = setInterval(check, 30_000)
     return () => clearInterval(t)
@@ -43,7 +49,7 @@
     <div class="titlebar" onmousedown={drag}></div>
     <div class="brand">KOBridge</div>
     {#each views as v (v.id)}
-      <button class="nav" aria-current={current === v.id} onclick={() => (current = v.id)}>
+      <button class="nav" aria-current={current === v.id} onclick={() => open(v.id)}>
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d={v.icon} /></svg>
         <span class="name">{v.label}</span>
         {#if v.id === 'backup' && app.backup.busy}<span class="spin" aria-label="respaldando"></span>{/if}
@@ -74,7 +80,11 @@
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div class="titlebar" onmousedown={drag}></div>
     <div class="pane">
-      {#key current}<View />{/key}
+      {#each views as v (v.id)}
+        {#if v.id === 'log' ? current === 'log' : seen.has(v.id)}
+          <div class="view" hidden={v.id !== current}><v.C /></div>
+        {/if}
+      {/each}
     </div>
   </main>
 </div>
