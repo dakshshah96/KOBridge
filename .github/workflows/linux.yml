@@ -1,6 +1,7 @@
 name: Linux build
 
 # Builds the .deb and .AppImage for a published release and attaches them to it.
+# Actions are pinned to commit SHAs; only the upload job can write to the repo.
 on:
   release:
     types: [published]
@@ -11,38 +12,50 @@ on:
         required: false
 
 permissions:
-  contents: write
+  contents: read
+
+env:
+  TAG: ${{ github.event.release.tag_name || inputs.tag }}
 
 jobs:
-  linux:
+  build:
     runs-on: ubuntu-22.04
-    env:
-      TAG: ${{ github.event.release.tag_name || inputs.tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ env.TAG || github.ref }}
       - name: System libraries for Tauri
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: src-tauri
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
       - run: bun install --frozen-lockfile
       - run: bun run check
       - run: cargo test --manifest-path src-tauri/Cargo.toml
       - run: bunx tauri build --bundles deb,appimage
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: linux-bundles
           path: |
             src-tauri/target/release/bundle/deb/*.deb
             src-tauri/target/release/bundle/appimage/*.AppImage
+
+  release:
+    needs: build
+    if: github.event.release.tag_name != '' || inputs.tag != ''
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: linux-bundles
+          path: bundles
       - name: Attach to the release
-        if: env.TAG != ''
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$TAG" src-tauri/target/release/bundle/deb/*.deb src-tauri/target/release/bundle/appimage/*.AppImage --clobber
+        run: gh release upload "$TAG" bundles/deb/*.deb bundles/appimage/*.AppImage --clobber --repo "$GITHUB_REPOSITORY"
