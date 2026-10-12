@@ -1,72 +1,123 @@
-# KOBridge
+<p align="center">
+  <img src="assets/icon.svg" width="128" alt="KOBridge icon">
+</p>
 
-KOBridge es una app para macOS que maneja KOReader en una Kindle por SSH, sin cable USB. Con la app podés respaldar la Kindle, ver tus estadísticas de lectura, exportar tus subrayados a Obsidian, mandar libros y fuentes, y editar los patches y la configuración de KOReader.
+<h1 align="center">KOBridge</h1>
 
-La app está hecha con Tauri 2, Svelte 5 y un backend en Rust. La interfaz está en español.
+<p align="center">
+  A macOS app that manages KOReader on a jailbroken Kindle over Wi-Fi, using SSH instead of a USB cable.<br>
+  Back up the Kindle, read your statistics, export highlights to Obsidian and Anki, and send books from your Mac.
+</p>
 
-## Qué hace cada sección
+<p align="center">
+  <a href="#install">Install</a>&nbsp;&nbsp;&nbsp;
+  <a href="#everything-it-does">Features</a>&nbsp;&nbsp;&nbsp;
+  <a href="#set-up-the-kindle">Setup</a>&nbsp;&nbsp;&nbsp;
+  <a href="#private-by-default">Privacy</a>&nbsp;&nbsp;&nbsp;
+  <a href="#questions">Questions</a>&nbsp;&nbsp;&nbsp;
+  <a href="#build-it-yourself">Build</a>
+</p>
 
-| Sección | Qué hace |
-|---|---|
-| Respaldo | Copia a tu Mac los ajustes, las estadísticas, los patches y los subrayados de KOReader en un archivo `.tar`. Puede incluir los libros, y antes de respaldar mide el tamaño real con `du` y la velocidad de la red para estimar cuánto va a tardar. Si lo activás, respalda una vez al día cuando la Kindle aparece en la red. |
-| Lectura | Copia `statistics.sqlite3` de KOReader y muestra las horas leídas, los minutos por día del último mes y el progreso de cada libro. |
-| Subrayados | Lee los subrayados y las notas de cada libro y escribe una nota `.md` por libro en tu bóveda de Obsidian, más un índice `Libros.md`. Si exportás de nuevo, la app agrega solo los subrayados nuevos y no toca lo que escribiste en la nota. Con Claude Code instalado, la app también puede agregar a cada nota un resumen, etiquetas y enlaces a tus otras notas, con el modelo que elijas. |
-| Enviar libros | Copia a `/mnt/us/books` los archivos que arrastrás a la ventana. |
-| Patches | Lista, edita, activa y desactiva los user patches de `koreader/patches`. |
-| Ajustes | Edita `defaults.custom.lua` y `settings.reader.lua`. La app solo guarda `settings.reader.lua` con KOReader cerrado, porque KOReader sobrescribe ese archivo al cerrarse. |
-| Registro | Muestra `crash.log` en vivo y puede escribir un mensaje en la pantalla de la Kindle con `fbink`. |
-| Fuentes | Sube y borra archivos `.ttf` y `.otf` en `/mnt/us/fonts`. |
+<p align="center">
+  <a href="https://github.com/danihrndzld/KOBridge/releases/latest"><img src="https://img.shields.io/github/v/release/danihrndzld/KOBridge?label=release&color=1c1c1c" alt="Latest release"></a>
+  <a href="https://github.com/danihrndzld/KOBridge/releases"><img src="https://img.shields.io/github/downloads/danihrndzld/KOBridge/total?color=1c1c1c" alt="Downloads"></a>
+  <a href="#what-you-need"><img src="https://img.shields.io/badge/macOS-Apple%20Silicon-black" alt="macOS on Apple Silicon"></a>
+  <a href="https://tauri.app"><img src="https://img.shields.io/badge/built%20with-Tauri%202-24c8db" alt="Built with Tauri 2"></a>
+</p>
 
-La app guarda una copia local de las estadísticas y de los subrayados, así que podés verlos aunque la Kindle esté apagada.
+<p align="center">
+  <img src="docs/assets/readme/highlights.png" width="400" alt="Highlights view with KOReader highlights from Don Quijote, the Obsidian vault picker and the Claude model selector">
+  <img src="docs/assets/readme/stats.png" width="400" alt="Reading statistics with total hours, a chart of minutes read per day and progress per book">
+  <img src="docs/assets/readme/backup.png" width="400" alt="Backup view with daily automatic backups and the backup history">
+  <img src="docs/assets/readme/patches.png" width="400" alt="User patches editor with a Lua patch open and switches to turn patches on and off">
+</p>
 
-## Requisitos
+KOBridge is a desktop app for people who read with [KOReader](https://koreader.rocks) on a Kindle and keep their notes on a Mac. It connects to the SSH server built into KOReader, so you can back up the device, see your reading statistics, export highlights, send ebooks and fonts, and edit KOReader settings without plugging in a cable. The app is built with Tauri 2, Svelte 5 and Rust, and it takes about 6 MB on disk. The interface is in Spanish.
 
-Necesitás una Kindle con jailbreak y KOReader instalado. Si todavía no lo tenés, seguí la guía de instalación de KOReader para Kindle en su [wiki](https://github.com/koreader/koreader/wiki/Installation-on-Kindle-devices). KOBridge se probó con KOReader v2026.07.1 en una Kindle con firmware 5.18.5.
+## Everything it does
 
-La app corre en macOS con Apple Silicon. La release solo trae la versión `aarch64`, pero podés compilarla para Intel desde el código.
+### Highlights and notes
 
-## Configuración
+- **Obsidian export.** KOBridge reads the highlights and notes of every book and writes one Markdown note per book into your Obsidian vault, plus a `Libros.md` index with progress and last reading date. It finds your vaults from Obsidian's own list, or creates a new vault if you don't have one.
+- **Safe re-export.** Each highlight gets an Obsidian block id (`^kob-1a2b3c4d`). When you export again, the app adds only the new highlights at the end of the note and leaves the text you wrote by hand untouched.
+- **Summaries with Claude.** If you have [Claude Code](https://claude.com/claude-code) installed, the app can add a summary, tags and links to related notes in your vault to each book note. You pick the model, Haiku, Sonnet, Opus or Fable, and the app limits Claude to reading and editing files inside the vault.
+- **Anki flashcards.** Claude can turn the highlights of one or more books into question and answer cards. The app saves them as a text file that Anki imports into one deck per book, and importing the same book again updates the cards instead of duplicating them.
 
-KOBridge no guarda direcciones IP ni contraseñas. La app usa el comando `ssh` de tu Mac con el nombre `kindle`, así que toda la configuración de la conexión vive en `~/.ssh/config`. Hacé estos pasos una sola vez.
+### Reading statistics
 
-### 1. Activá el servidor SSH en KOReader
+- **Dashboard.** The app copies KOReader's `statistics.sqlite3` and shows total hours read, days with reading, minutes per day for the last 30 days, and progress and time spent per book.
+- **Offline.** KOBridge keeps a local copy of the statistics and highlights, so you can browse them while the Kindle is off.
 
-Primero, conectá la Kindle al Wi-Fi. Segundo, en KOReader abrí el menú de herramientas (el ícono de engranaje) y entrá a Red, luego a Servidor SSH. Tercero, tocá Iniciar servidor SSH. El servidor escucha en el puerto 2222 y el usuario es `root`.
+### Backup
 
-En el mismo menú, Información de red te muestra la IP de la Kindle. Anotala para el paso 3.
+- **One file per backup.** KOBridge copies KOReader settings, statistics, user patches and the `.sdr` folders that hold your highlights into a `.tar` file on your Mac. You can include the books too.
+- **Size estimate.** Before a backup, the app measures the real size with `du` and the Wi-Fi speed, so it can tell you how long the backup will take.
+- **Daily backup.** If you turn it on, the app backs up once a day, the first time the Kindle shows up on the network.
 
-### 2. Creá una llave SSH y pasala a la Kindle
+### Books, fonts and KOReader settings
 
-KOReader acepta llaves públicas en el archivo `koreader/settings/SSH/authorized_keys` de la Kindle. Primero, creá una llave solo para la Kindle en tu Mac:
+- **Send books.** Drag EPUB, PDF, MOBI, AZW3, FB2, CBZ, DjVu or TXT files onto the window, or pick them from a dialog, and the app copies them to `/mnt/us/books`.
+- **Fonts.** Upload and delete `.ttf` and `.otf` fonts in `/mnt/us/fonts`.
+- **User patches.** List, edit, create, turn on and turn off the Lua user patches in `koreader/patches`.
+- **Settings files.** Edit `defaults.custom.lua` and `settings.reader.lua`. The app only saves `settings.reader.lua` while KOReader is closed, because KOReader overwrites that file when it exits.
+- **Live log.** Follow `crash.log` as KOReader writes it, filter it, and show a message on the Kindle screen with `fbink`.
+
+## Install
+
+First, download the `.dmg` from the [latest release](https://github.com/danihrndzld/KOBridge/releases/latest) and drag KOBridge into Applications.
+
+Second, open the app. KOBridge isn't signed with an Apple Developer ID, so macOS blocks it the first time. Right-click KOBridge in Applications and choose Open, or remove the quarantine flag in Terminal:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/KOBridge.app
+```
+
+Third, when macOS asks whether KOBridge can find devices on your local network, allow it. Without that permission the app can't reach the Kindle, even when `ssh kindle` works in Terminal. You can change it later in System Settings, under Privacy & Security, Local Network.
+
+The sidebar shows whether the app found the Kindle, its IP address, the battery level and the free space. If it can't find the Kindle, open Detalle to see the SSH error.
+
+## Set up the Kindle
+
+KOBridge stores no IP addresses or passwords. It runs the `ssh` command of your Mac with the host name `kindle`, so the whole connection lives in `~/.ssh/config`. You do these steps once.
+
+### 1. Start the SSH server in KOReader
+
+First, connect the Kindle to Wi-Fi. Second, in KOReader open the tools menu (the gear icon) and go to Network, then SSH server. Third, tap Start SSH server. The server listens on port 2222 and the user is `root`.
+
+Network info in the same menu shows the IP address of the Kindle. Write it down for step 3.
+
+### 2. Create an SSH key and copy it to the Kindle
+
+KOReader accepts public keys in `koreader/settings/SSH/authorized_keys` on the Kindle. Create a key just for the Kindle on your Mac:
 
 ```sh
 ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519_kindle -C kindle
 ```
 
-Después, copiá el contenido de `~/.ssh/id_ed25519_kindle.pub` a `koreader/settings/SSH/authorized_keys` en la Kindle. Lo más simple es conectar la Kindle por USB y pegar la línea en ese archivo con un editor de texto. Si el archivo no existe, crealo.
+Then copy the contents of `~/.ssh/id_ed25519_kindle.pub` into `koreader/settings/SSH/authorized_keys` on the Kindle. The simplest way is to connect the Kindle over USB and paste the line into that file with a text editor. If the file doesn't exist, create it.
 
-Otra opción es activar el login sin contraseña en el menú del servidor SSH, entrar una vez y copiar la llave por SSH. Si usás esa opción, apagala apenas termines, porque deja la Kindle abierta para cualquiera en tu red.
+You can also turn on login without a password in the SSH server menu, connect once and copy the key over SSH. If you do, turn that option off as soon as you finish, because it leaves the Kindle open to anyone on your network.
 
-### 3. Agregá la Kindle a `~/.ssh/config`
+### 3. Add the Kindle to `~/.ssh/config`
 
-Agregá este bloque a `~/.ssh/config` y cambiá la IP por la de tu Kindle:
+Add this block to `~/.ssh/config` and replace the IP address with the one of your Kindle:
 
 ```
 Host kindle
-  HostName 192.168.0.38
+  HostName 192.168.1.50
   Port 2222
   User root
   IdentityFile ~/.ssh/id_ed25519_kindle
   IdentitiesOnly yes
 ```
 
-Si la Kindle se conecta a varias redes, cada red le da una IP distinta. En ese caso podés dejar que SSH elija la IP que responde. Reemplazá la línea `HostName` del bloque anterior por estos bloques `Match`, y ponelos antes de `Host kindle`:
+If the Kindle joins more than one Wi-Fi network, it gets a different IP address on each one, and SSH can pick the address that answers. Replace the `HostName` line with these `Match` blocks, and put them before `Host kindle`:
 
 ```
-Match originalhost kindle exec "nc -z -G 1 192.168.0.38 2222 2>/dev/null"
-  HostName 192.168.0.38
-Match originalhost kindle exec "nc -z -G 1 10.100.200.70 2222 2>/dev/null"
-  HostName 10.100.200.70
+Match originalhost kindle exec "nc -z -G 1 192.168.1.50 2222 2>/dev/null"
+  HostName 192.168.1.50
+Match originalhost kindle exec "nc -z -G 1 10.0.0.70 2222 2>/dev/null"
+  HostName 10.0.0.70
 
 Host kindle
   HostKeyAlias kindle
@@ -76,61 +127,74 @@ Host kindle
   IdentitiesOnly yes
 ```
 
-SSH prueba las IPs en orden y usa la primera que tiene el puerto 2222 abierto. La línea `HostKeyAlias kindle` hace que SSH guarde una sola huella de la Kindle para todas sus IPs, así no te pregunta de nuevo cada vez que cambiás de red.
+SSH tries the addresses in order and uses the first one with port 2222 open. `HostKeyAlias kindle` makes SSH keep one fingerprint for every address, so it doesn't ask again each time you change networks.
 
-### 4. Probá la conexión
+### 4. Test the connection
 
-Corré este comando en la Terminal:
+Run this in Terminal:
 
 ```sh
 ssh kindle 'cat /mnt/us/koreader/git-rev'
 ```
 
-La primera vez SSH te pide confirmar la huella de la Kindle, y tenés que responder `yes`. Si el comando imprime la versión de KOReader, la configuración está lista. KOBridge no puede responder esa pregunta por vos, así que hacé esta prueba antes de abrir la app.
+The first time, SSH asks you to confirm the fingerprint of the Kindle, and you answer `yes`. KOBridge can't answer that question for you, so run this test before you open the app. If the command prints the KOReader version, the setup is done.
 
-### 5. Instalá la app
+### Default folders
 
-Primero, bajá el `.dmg` de la [última release](https://github.com/danihrndzld/KOBridge/releases/latest) y arrastrá KOBridge a Aplicaciones.
+The app saves backups in `~/Backups/kindle` and exports highlights to `~/Documents/Obsidian Vault/KOReader`. You can pick another vault in Subrayados and another backup folder in Respaldo.
 
-Segundo, abrí la app. La app no está firmada con un certificado de Apple, así que macOS la bloquea la primera vez. Para abrirla, hacé clic derecho sobre KOBridge en Aplicaciones y elegí Abrir. También podés quitar la marca de cuarentena desde la Terminal:
+Anki cards go to `~/Downloads/KOReader Anki <date>.txt`, with a deck called `KOReader::<book>` for each book. Open Anki once to create your profile before you import them. The Abrir en Anki button opens the import dialog.
+
+## Private by default
+
+KOBridge has no account, no analytics and no tracking. The app only connects to your Kindle over SSH. Your highlights leave your Mac only when you press Enriquecer or Tarjetas Anki, and then Claude Code sends them to Anthropic under your own Claude login.
+
+When Claude edits a note, the app runs `claude -p` inside your vault with only the Read, Glob, Grep and Edit tools. If the vault doesn't use git, the app saves a `.kob.bak` copy of each note before Claude edits it.
+
+## What you need
+
+- A Mac with Apple Silicon. The release only ships the `aarch64` build, but you can build the app for Intel from source.
+- A jailbroken Kindle with KOReader installed. Follow the [KOReader installation guide for Kindle](https://github.com/koreader/koreader/wiki/Installation-on-Kindle-devices) if you don't have it yet. KOBridge was tested with KOReader v2026.07.1 on Kindle firmware 5.18.5.
+- [Claude Code](https://claude.com/claude-code), signed in, for summaries and Anki cards. Everything else works without it.
+- [Anki](https://apps.ankiweb.net) to import the flashcards.
+
+## Questions
+
+### Does it work with a Kindle that isn't jailbroken?
+
+No. KOBridge talks to the SSH server that comes with KOReader, and KOReader only runs on a jailbroken Kindle.
+
+### Does it work with Kobo or PocketBook?
+
+It hasn't been tested. The app expects the Kindle paths `/mnt/us/books` and `/mnt/us/koreader`, so other devices need code changes.
+
+### Can it restart KOReader after I change a patch or a font?
+
+No. KOReader only restarts when it asks for it from inside, so you restart it on the Kindle yourself.
+
+### Why does the message on the Kindle screen disappear?
+
+The message that `fbink` writes stays on screen until KOReader redraws the page.
+
+## Build it yourself
+
+You need Rust, [Bun](https://bun.sh) and the Xcode Command Line Tools.
 
 ```sh
-xattr -dr com.apple.quarantine /Applications/KOBridge.app
-```
-
-Tercero, si macOS te pregunta si KOBridge puede buscar dispositivos en tu red local, respondé que sí. Sin ese permiso, la app no llega a la Kindle aunque `ssh kindle` funcione en la Terminal. Si respondiste que no, podés cambiarlo en Ajustes del Sistema, en Privacidad y seguridad, Red local.
-
-Abajo en la barra lateral, la app muestra si encontró la Kindle, su IP, la batería y el espacio libre. Si no la encuentra, abrí Detalle para ver el error de SSH.
-
-### Carpetas por defecto
-
-La app guarda los respaldos en `~/Backups/kindle` y exporta los subrayados a `~/Documents/Obsidian Vault/KOReader`. En Subrayados podés elegir otra bóveda de las que tiene registradas Obsidian, o crear una nueva si no tenés ninguna. La carpeta de respaldos se cambia en Respaldo.
-
-Para enriquecer las notas con Claude necesitás [Claude Code](https://claude.com/claude-code) con tu sesión iniciada. La app corre `claude -p` en tu bóveda y solo le permite leer y editar archivos dentro de ella. Si la bóveda no usa git, la app guarda una copia `.kob.bak` de cada nota antes de que Claude la edite.
-
-## Límites conocidos
-
-La app no puede reiniciar KOReader. KOReader solo se reinicia cuando lo pide desde adentro, así que después de cambiar un patch o una fuente tenés que reiniciarlo en la Kindle.
-
-El mensaje que escribe `fbink` queda en pantalla hasta que KOReader vuelve a dibujarla.
-
-## Compilar desde el código
-
-Necesitás Rust, [Bun](https://bun.sh) y las Command Line Tools de Xcode.
-
-```sh
+git clone https://github.com/danihrndzld/KOBridge.git
+cd KOBridge
 bun install
-bunx tauri dev            # abre la app en modo desarrollo
-bunx tauri build          # crea el .app y el .dmg en src-tauri/target/release/bundle
-bun run check             # revisa los tipos de Svelte y TypeScript
+bunx tauri dev            # run the app in development mode
+bunx tauri build          # build the .app and .dmg in src-tauri/target/release/bundle
+bun run check             # check Svelte and TypeScript types
 ```
 
-Las pruebas de Rust están en `src-tauri`:
+The Rust tests live in `src-tauri`:
 
 ```sh
 cd src-tauri
-cargo test                              # pruebas que no necesitan la Kindle
-cargo test -- --ignored --nocapture     # pruebas contra una Kindle real
+cargo test                              # tests that don't need the Kindle
+cargo test -- --ignored --nocapture     # tests against a real Kindle and Claude Code
 ```
 
-Las pruebas con `--ignored` usan tu Kindle por SSH. Crean archivos de prueba en `/tmp` y en `koreader/patches` de la Kindle, y los borran al terminar.
+The `--ignored` tests use your Kindle over SSH. They create test files in `/tmp` and in `koreader/patches` on the Kindle, and they delete them when they finish.
