@@ -16,7 +16,7 @@ bun run check                           # svelte-check + tsc; must stay at 0 err
 cd src-tauri
 cargo test                              # unit tests (Lua parser, Markdown, path allowlist, quoting)
 cargo test parses_sidecar               # single test by name
-cargo test -- --ignored --nocapture     # live tests against the real Kindle
+cargo test -- --ignored --nocapture     # live tests: the real Kindle, claude -p and the highlights cache
 cargo test kindle_size -- --ignored --nocapture
 ```
 
@@ -64,6 +64,14 @@ Extend that allowlist rather than bypassing it.
 - **No remote restart.** KOReader cannot be restarted from outside: `koreader.sh` only relaunches on an internal exit code 85. The UI tells the user to restart it instead.
 - **SSH server lifetime.** The dropbear SSH server survives a KOReader exit.
 
+**Obsidian export (`obsidian.rs`).**
+- Each highlight ends with an Obsidian block id `^kob-xxxxxxxx`, an FNV-1a hash of `datetime` and `text`. Never change the hash: re-export uses these ids to append only new highlights, so a changed id duplicates every quote. `block_id_is_stable` pins one value.
+- `merge()` never rewrites user text. It appends new quotes at the end and only sets the app-owned frontmatter keys (`progress`, `highlights`, `last_read`, `read_time`, `enriched`). A note without any `^kob-` id comes from 0.1.1 and is renamed to `<title> (anterior).md`. `Libros.md` is app-owned and rewritten.
+- `last_read`/`read_time` come from the cached stats snapshot, matched by the sidecar's `partial_md5_checksum` (same value as `book.md5`), falling back to title.
+- Vaults are read from `~/Library/Application Support/obsidian/obsidian.json`.
+
+**Claude enrichment.** `enrich_start` runs `claude -p` once per note with the vault root as cwd, `--tools Read,Glob,Grep,Edit --permission-mode acceptEdits --strict-mcp-config --setting-sources project`. Don't use `--bare`: it disables the OAuth login. The model is one of `haiku`, `sonnet`, `opus`, `fable` (validated server side, default `sonnet` in `Settings.ai_model`). Progress comes from `--output-format stream-json`. Claude writes `## Resumen` and `## Relacionado` between the author line and the first chapter, so appended quotes stay below them. `cargo test claude_enrich -- --ignored --nocapture` runs it with Haiku on a temp vault (~12 s).
+
 **Frontend.**
 - **Shared state.** `src/lib/store.svelte.ts` (Svelte 5 runes) holds global state: connection status polled every 30 s, settings and backup progress. It also runs the auto-backup: one attempt per day, and `last_auto_backup` is saved before the run so a failure doesn't retry every poll. `explain()` maps ssh stderr to a user-facing hint.
 - **Typed wrappers.** `src/lib/api.ts` has the typed `invoke` wrappers and the formatters, which use Spanish decimal commas.
@@ -84,6 +92,6 @@ Extend that allowlist rather than bypassing it.
 - **Installing.** Copy `src-tauri/target/release/bundle/macos/KOBridge.app` over `/Applications/KOBridge.app`.
 - **Icon.** Source is `assets/icon.svg`; regenerate with `rsvg-convert -w 1024 -h 1024 assets/icon.svg -o assets/icon.png && bunx tauri icon assets/icon.png`, then delete `src-tauri/icons/{android,ios}`.
 
-## Out of scope
+## Planned
 
-Calibre integration (sshfs + "Connect to folder", or a Calibre device plugin) is planned as a separate project. Don't add it here.
+A read-only Calibre library view (read `metadata.db`, compare with the Kindle, send books, and register sent books in the device's `.metadata.calibre` so Calibre sees them) is planned inside KOBridge with its own spec. A Calibre device plugin over SSH is a separate project. Anki cards from highlights are also planned with their own spec.

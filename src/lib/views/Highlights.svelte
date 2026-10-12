@@ -2,7 +2,7 @@
   import { onMount } from 'svelte'
   import { open } from '@tauri-apps/plugin-dialog'
   import Loading from '../Loading.svelte'
-  import { api, errText, fmtWhen, type HighlightSet } from '../api'
+  import { api, errText, fmtWhen, today, type HighlightSet, type HBook, type Model } from '../api'
   import { app, saveSettings } from '../store.svelte'
 
   let set = $state<HighlightSet>({ books: [], errors: [], fetched_at: 0 })
@@ -30,7 +30,9 @@
     }
   }
 
+  let vaults = $state<string[]>([])
   onMount(async () => {
+    api.obsidianVaults().then((v) => (vaults = v)).catch(() => {})
     set = await api.highlights(false).catch(() => set)
     phase = 'idle'
   })
@@ -41,8 +43,10 @@
   async function exportAll() {
     exporting = true
     try {
-      const n = await api.highlightsExport(set.books)
-      msg = { kind: 'ok', text: `Exporté ${n} libros a ${app.settings?.vault_dir}`, reveal: true }
+      const r = await api.highlightsExport(set.books)
+      const parts = [`${r.created} notas nuevas`, `${r.updated} actualizadas`, `${r.added} subrayados agregados`]
+      const legacy = r.legacy ? ` Renombré ${r.legacy} notas de la versión anterior a "(anterior)".` : ''
+      msg = { kind: 'ok', text: `Exporté a ${r.dir}: ${parts.join(', ')}.${legacy}`, reveal: true }
     } catch (e) {
       msg = { kind: 'bad', text: errText(e) }
     } finally {
@@ -53,9 +57,68 @@
     const dir = await open({ directory: true, defaultPath: app.settings?.vault_dir })
     if (typeof dir === 'string') await saveSettings({ vault_dir: dir })
   }
+  async function onVault(e: Event & { currentTarget: HTMLSelectElement }) {
+    const v = e.currentTarget.value
+    e.currentTarget.value = app.settings?.vault_dir ?? ''
+    if (v === '__other') await pickVault()
+    else await saveSettings({ vault_dir: v })
+  }
+  async function createVault() {
+    try {
+      const v = await api.obsidianCreateVault()
+      vaults = [...vaults, v]
+      await saveSettings({ vault_dir: `${v}/KOReader` })
+    } catch (e) {
+      msg = { kind: 'bad', text: errText(e) }
+    }
+  }
+  const tail = (p: string) => p.split('/').slice(-2).join(' / ')
+  const vaultOptions = $derived.by(() => {
+    const opts = vaults.map((v) => ({ value: `${v}/KOReader`, label: `${v.split('/').pop()} / KOReader` }))
+    const cur = app.settings?.vault_dir
+    return cur && !opts.some((o) => o.value === cur) ? [{ value: cur, label: tail(cur) }, ...opts] : opts
+  })
+
+  // ---- Claude ----
+  const MODELS: { id: Model; name: string; hint: string }[] = [
+    { id: 'haiku', name: 'Haiku', hint: 'más rápido' },
+    { id: 'sonnet', name: 'Sonnet', hint: 'equilibrado' },
+    { id: 'opus', name: 'Opus', hint: 'más profundo' },
+    { id: 'fable', name: 'Fable', hint: 'el más nuevo' },
+  ]
+  const model = $derived<Model>(app.settings?.ai_model || 'sonnet')
+  let picked = $state<string[]>([])
+  const toggle = (id: string) => (picked = picked.includes(id) ? picked.filter((x) => x !== id) : [...picked, id])
+
+  type Job = { title: string; state: 'waiting' | 'running' | 'done' | 'error'; text: string }
+  let jobs = $state<Job[]>([])
+  let running = $state(false)
+
+  async function enrich() {
+    const books: HBook[] = picked.length ? set.books.filter((b) => picked.includes(b.sidecar)) : book ? [book] : []
+    if (!books.length) return
+    jobs = books.map((b) => ({ title: b.title, state: 'waiting', text: '' }))
+    running = true
+    msg = null
+    try {
+      await api.enrichStart(books, model, today(), (ev) => {
+        const j = jobs.find((j) => j.title === ev.book && (j.state === 'waiting' || j.state === 'running'))
+        if (!j) return
+        if (ev.kind === 'start') { j.state = 'running'; j.text = 'Abriendo la nota' }
+        else if (ev.kind === 'tool') j.text = ev.text
+        else if (ev.kind === 'done') { j.state = 'done'; j.text = '' }
+        else { j.state = 'error'; j.text = ev.text }
+      })
+    } catch (e) {
+      msg = { kind: 'bad', text: errText(e) }
+    } finally {
+      for (const j of jobs) if (j.state === 'waiting' || j.state === 'running') { j.state = 'error'; j.text = 'Cancelado' }
+      running = false
+    }
+  }
+  const jobLabel = { waiting: 'En cola', running: 'Trabajando…', done: 'Listo', error: 'Error' }
 
   const book = $derived(set.books[selected])
-  const vaultName = $derived(app.settings?.vault_dir.split('/').slice(-2).join('/') ?? '')
   const waitingForKindle = $derived(!set.books.length && phase === 'idle' && !app.status && app.checking)
 </script>
 
@@ -64,8 +127,12 @@
     <div>
       <h1>Subrayados</h1>
       <p class="sub num">
-        {#if set.books.length}{set.books.length} libros · {count(set)} subrayados · {/if}destino
-        <button class="link" onclick={pickVault} title={app.settings?.vault_dir}>{vaultName}</button>
+        {#if set.books.length}{set.books.length} libros · {count(set)} subrayados ·&nbsp;{/if}destino
+        <select class="vault" value={app.settings?.vault_dir} onchange={onVault} title={app.settings?.vault_dir} aria-label="Carpeta de Obsidian">
+          {#each vaultOptions as o (o.value)}<option value={o.value}>{o.label}</option>{/each}
+          <option value="__other">Otra carpeta…</option>
+        </select>
+        {#if !vaults.length}<button class="link" onclick={createVault}>Crear bóveda</button>{/if}
       </p>
     </div>
     <div class="row">
@@ -87,6 +154,38 @@
       </span>
     </div>
   {/if}
+  {#if set.books.length}
+    <div class="claude">
+      <div class="intro">
+        <p class="label">Enriquecer con Claude</p>
+        <p class="sub">Agrega un resumen, etiquetas y enlaces a tus otras notas de la bóveda.</p>
+      </div>
+      <div class="models" role="radiogroup" aria-label="Modelo de Claude">
+        {#each MODELS as m (m.id)}
+          <button class="model" role="radio" aria-checked={model === m.id} disabled={running} onclick={() => saveSettings({ ai_model: m.id })}>
+            <strong>{m.name}</strong><span>{m.hint}</span>
+          </button>
+        {/each}
+      </div>
+      <div class="row">
+        {#if running}<button class="btn ghost" onclick={() => api.enrichStop()}>Cancelar</button>{/if}
+        <button class="btn" disabled={running || (!picked.length && !book)} onclick={enrich}>
+          {running ? 'Enriqueciendo…' : picked.length ? `Enriquecer ${picked.length} ${picked.length === 1 ? 'libro' : 'libros'}` : 'Enriquecer este libro'}
+        </button>
+      </div>
+    </div>
+    {#if jobs.length}
+      <div class="list num">
+        {#each jobs as j}
+          <div class="item">
+            <span class="grow ellipsis">{j.title}</span>
+            {#if j.text}<span class="sub ellipsis" style="max-width:45%; margin:0" title={j.text}>{j.text}</span>{/if}
+            <span class="pill" class:ok={j.state === 'done'} class:bad={j.state === 'error'}>{jobLabel[j.state]}</span>
+          </div>
+        {/each}
+      </div>
+    {/if}
+  {/if}
   {#if set.errors.length}<div class="banner warn">No pude leer {set.errors.length} sidecars: {set.errors[0]}</div>{/if}
 
   {#if !set.books.length && (phase !== 'idle' || waitingForKindle)}
@@ -102,9 +201,10 @@
     <div class="split">
       <div class="books list">
         {#each set.books as b, i (b.sidecar)}
-          <button class="book" aria-current={i === selected} onclick={() => (selected = i)}>
-            <span class="ellipsis">{b.title}</span><span class="n num">{b.notes.length}</span>
-          </button>
+          <div class="book" aria-current={i === selected}>
+            <input type="checkbox" checked={picked.includes(b.sidecar)} onchange={() => toggle(b.sidecar)} aria-label={`Elegir ${b.title}`} />
+            <button onclick={() => (selected = i)}><span class="ellipsis">{b.title}</span><span class="n num">{b.notes.length}</span></button>
+          </div>
         {/each}
       </div>
       {#if book}
@@ -132,10 +232,24 @@
 <style>
   .split { display: grid; grid-template-columns: minmax(0, 250px) minmax(0, 1fr); gap: 16px; align-items: start }
   .books { padding: 6px; display: grid; gap: 1px; max-height: calc(100vh - 220px); overflow: auto }
-  .book { appearance: none; border: 0; background: none; font: 14px/1.3 var(--serif); color: var(--ink-2); padding: 8px 10px; border-radius: 6px; display: flex; justify-content: space-between; gap: 10px; text-align: left; align-items: center }
+  .book { display: flex; align-items: center; gap: 8px; padding-left: 8px; min-width: 0; border-radius: 6px; color: var(--ink-2) }
+  .book input { margin: 0; accent-color: var(--ink); flex: none }
+  .book button { appearance: none; border: 0; background: none; font: 14px/1.3 var(--serif); color: inherit; padding: 8px 10px 8px 0; display: flex; justify-content: space-between; gap: 10px; text-align: left; align-items: center; flex: 1; min-width: 0 }
+  .book button .ellipsis { flex: 1; min-width: 0 }
   .book:hover { color: var(--ink); background: var(--paper) }
   .book[aria-current='true'] { color: var(--ink); background: var(--rule) }
   .n { font: 12px var(--sans); color: var(--ink-2) }
+  .vault { font: inherit; color: var(--ink); background: transparent; border: 1px solid var(--rule); border-radius: 6px; padding: 2px 6px; max-width: 280px }
+  .claude { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; border: 1px solid var(--rule); border-radius: 8px; padding: 14px 16px }
+  .intro { flex: 1 1 200px; min-width: 0 }
+  .intro .sub { margin-top: 4px; font-size: 12.5px }
+  .models { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); padding: 3px; gap: 3px; border: 1px solid var(--rule); border-radius: 9px; background: var(--paper) }
+  .model { appearance: none; border: 0; background: none; border-radius: 6px; padding: 7px 12px; display: grid; gap: 2px; text-align: center; color: var(--ink-2); min-width: 78px }
+  .model strong { font: 600 13px/1.2 var(--sans) }
+  .model span { font: 11px/1.2 var(--sans) }
+  .model:hover:not(:disabled) { color: var(--ink) }
+  .model[aria-checked='true'] { background: var(--sheet); color: var(--ink); box-shadow: 0 1px 2px rgb(0 0 0 / .12) }
+  .model:disabled { opacity: .6 }
   article { border: 1px solid var(--rule); border-radius: 8px; padding: 24px 28px; font: 15px/1.6 var(--serif); max-height: calc(100vh - 220px); overflow: auto }
   h2 { font: 600 19px/1.2 var(--serif); margin: 0 }
   .meta { font: 12px var(--sans); color: var(--ink-2); margin: 4px 0 24px }

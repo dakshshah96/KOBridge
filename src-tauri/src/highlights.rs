@@ -1,4 +1,4 @@
-//! Highlights from KOReader sidecars (`*.sdr/metadata.*.lua`) to Markdown notes.
+//! Highlights from KOReader sidecars (`*.sdr/metadata.*.lua`); `obsidian.rs` renders them.
 
 use crate::lua;
 use serde::{Deserialize, Serialize};
@@ -25,6 +25,9 @@ pub struct Book {
     pub title: String,
     pub authors: String,
     pub percent: f64,
+    /// KOReader's partial md5, the same value as `book.md5` in statistics.sqlite3.
+    #[serde(default)]
+    pub md5: Option<String>,
     pub notes: Vec<Note>,
 }
 
@@ -63,28 +66,9 @@ fn book(path: &str, v: &lua::Lua) -> Option<Book> {
         title: props.and_then(|p| p.str("title")).filter(|s| !s.is_empty()).unwrap_or(fallback).to_string(),
         authors: props.and_then(|p| p.str("authors")).unwrap_or("").replace('\n', ", "),
         percent: v.num("percent_finished").unwrap_or(0.0),
+        md5: v.str("partial_md5_checksum").map(str::to_string),
         notes,
     })
-}
-
-fn yaml(s: &str) -> String { format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\"")) }
-
-pub fn markdown(b: &Book) -> String {
-    let mut s = format!(
-        "---\ntitle: {}\nauthor: {}\nprogress: {}%\nhighlights: {}\nsource: koreader\n---\n\n# {}\n",
-        yaml(&b.title), yaml(&b.authors), (b.percent * 100.0).round(), b.notes.len(), b.title);
-    if !b.authors.is_empty() { s += &format!("*{}*\n", b.authors); }
-    for n in &b.notes {
-        s.push('\n');
-        for line in n.text.lines() { s += &format!("> {line}\n"); }
-        let mut refs = vec![];
-        if let Some(c) = &n.chapter { refs.push(c.clone()); }
-        if let Some(p) = n.page { refs.push(format!("p. {p}")); }
-        if let Some(d) = &n.datetime { refs.push(d.get(..10).unwrap_or(d).to_string()); }
-        if !refs.is_empty() { s += &format!(">\n> — {}\n", refs.join(" · ")); }
-        if let Some(note) = &n.note { s += &format!("\n**Nota:** {}\n", note.trim()); }
-    }
-    s
 }
 
 /// File name safe for macOS and Obsidian links.
@@ -102,7 +86,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn dump_to_markdown() {
+    fn parses_dump() {
         let dump = "@@KOB@@ /mnt/us/books/A (1).sdr/metadata.epub.lua\nreturn {\n [\"annotations\"] = {\n  [1] = { [\"text\"] = \"uno\\\ndos\", [\"pageno\"] = 5, [\"chapter\"] = \"Cap\", [\"datetime\"] = \"2026-08-05 06:52:57\", [\"note\"] = \"ojo\" },\n  [2] = { [\"text\"] = \"  \" },\n },\n [\"doc_props\"] = { [\"title\"] = \"Libro: \\\"A\\\"\", [\"authors\"] = \"X\\\nY\" },\n [\"percent_finished\"] = 0.5,\n}\n\n@@KOB@@ /mnt/us/books/B.sdr/metadata.epub.lua\nreturn { [\"annotations\"] = {} }\n";
         let (books, errs) = parse_dump(dump);
         assert!(errs.is_empty(), "{errs:?}");
@@ -110,10 +94,8 @@ mod tests {
         let b = &books[0];
         assert_eq!(b.authors, "X, Y");
         assert_eq!(b.notes.len(), 1, "blank highlight dropped");
-        let md = markdown(b);
-        assert!(md.contains("title: \"Libro: \\\"A\\\"\""));
-        assert!(md.contains("> uno\n> dos\n>\n> — Cap · p. 5 · 2026-08-05\n"));
-        assert!(md.contains("**Nota:** ojo"));
+        assert_eq!(b.notes[0].text, "uno\ndos");
+        assert_eq!(b.notes[0].note.as_deref(), Some("ojo"));
         assert_eq!(file_name(&b.title), "Libro A.md");
     }
 }

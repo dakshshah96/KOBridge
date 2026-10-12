@@ -10,7 +10,7 @@ La app está hecha con Tauri 2, Svelte 5 y un backend en Rust. La interfaz está
 |---|---|
 | Respaldo | Copia a tu Mac los ajustes, las estadísticas, los patches y los subrayados de KOReader en un archivo `.tar`. Puede incluir los libros, y antes de respaldar mide el tamaño real con `du` y la velocidad de la red para estimar cuánto va a tardar. Si lo activás, respalda una vez al día cuando la Kindle aparece en la red. |
 | Lectura | Copia `statistics.sqlite3` de KOReader y muestra las horas leídas, los minutos por día del último mes y el progreso de cada libro. |
-| Subrayados | Lee los subrayados y las notas de cada libro y escribe un archivo `.md` por libro en una carpeta de Obsidian. |
+| Subrayados | Lee los subrayados y las notas de cada libro y escribe una nota `.md` por libro en tu bóveda de Obsidian, más un índice `Libros.md`. Si exportás de nuevo, la app agrega solo los subrayados nuevos y no toca lo que escribiste en la nota. Con Claude Code instalado, la app también puede agregar a cada nota un resumen, etiquetas y enlaces a tus otras notas, con el modelo que elijas. |
 | Enviar libros | Copia a `/mnt/us/books` los archivos que arrastrás a la ventana. |
 | Patches | Lista, edita, activa y desactiva los user patches de `koreader/patches`. |
 | Ajustes | Edita `defaults.custom.lua` y `settings.reader.lua`. La app solo guarda `settings.reader.lua` con KOReader cerrado, porque KOReader sobrescribe ese archivo al cerrarse. |
@@ -104,7 +104,9 @@ Abajo en la barra lateral, la app muestra si encontró la Kindle, su IP, la bate
 
 ### Carpetas por defecto
 
-La app guarda los respaldos en `~/Backups/kindle` y exporta los subrayados a `~/Documents/Obsidian Vault/KOReader`. Podés cambiar las dos carpetas desde la app, en Respaldo y en Subrayados.
+La app guarda los respaldos en `~/Backups/kindle` y exporta los subrayados a `~/Documents/Obsidian Vault/KOReader`. En Subrayados podés elegir otra bóveda de las que tiene registradas Obsidian, o crear una nueva si no tenés ninguna. La carpeta de respaldos se cambia en Respaldo.
+
+Para enriquecer las notas con Claude necesitás [Claude Code](https://claude.com/claude-code) con tu sesión iniciada. La app corre `claude -p` en tu bóveda y solo le permite leer y editar archivos dentro de ella. Si la bóveda no usa git, la app guarda una copia `.kob.bak` de cada nota antes de que Claude la edite.
 
 ## Límites conocidos
 

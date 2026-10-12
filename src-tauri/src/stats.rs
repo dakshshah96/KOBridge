@@ -62,3 +62,11 @@ pub fn read(db: &Path, snapshot_at: i64) -> rusqlite::Result<Stats> {
         recent,
     })
 }
+
+/// Per book: (md5, title, last open as local YYYY-MM-DD, total read seconds), for the Obsidian frontmatter.
+pub fn per_book(db: &Path) -> rusqlite::Result<Vec<(String, String, String, i64)>> {
+    let c = Connection::open_with_flags(db, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let mut q = c.prepare(
+        "SELECT coalesce(md5,''), coalesce(title,''), coalesce(date(last_open,'unixepoch','localtime'),''), coalesce(total_read_time,0) FROM book")?;
+    q.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?.collect()
+}

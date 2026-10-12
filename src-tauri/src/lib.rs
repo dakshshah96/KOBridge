@@ -1,5 +1,6 @@
 mod highlights;
 mod lua;
+mod obsidian;
 mod ssh;
 mod stats;
 
@@ -8,7 +9,9 @@ use ssh::{sq, Res};
 use std::path::{Path, PathBuf};
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager, State};
-use tokio::io::{AsyncBufReadExt, BufReader};
+use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::sync::Mutex;
 
 const KO: &str = "/mnt/us/koreader";
@@ -30,6 +33,7 @@ struct Settings {
     auto_backup: bool,
     last_auto_backup: String,
     last_target: Option<Vec<String>>,
+    ai_model: String,
 }
 
 impl Default for Settings {
@@ -41,6 +45,7 @@ impl Default for Settings {
             auto_backup: true,
             last_auto_backup: String::new(),
             last_target: None,
+            ai_model: "sonnet".into(),
         }
     }
 }
@@ -235,18 +240,174 @@ async fn highlights(app: AppHandle, refresh: bool) -> Res<HighlightSet> {
     Ok(set)
 }
 
-#[tauri::command]
-fn highlights_export(app: AppHandle, books: Vec<highlights::Book>) -> Res<usize> {
-    let dir = PathBuf::from(get_settings(app).vault_dir);
+#[derive(Serialize, Default)]
+struct ExportReport { created: usize, updated: usize, added: usize, legacy: usize, dir: String }
+
+fn fmt_secs(s: i64) -> String {
+    let m = (s + 30) / 60;
+    if m < 60 { format!("{m} min") } else { format!("{} h {} min", m / 60, m % 60) }
+}
+
+type Extras = Vec<(String, String, obsidian::Extra)>;
+
+/// Reading data per book from the cached stats snapshot; empty when there is none yet.
+fn extras(app: &AppHandle) -> Extras {
+    let Ok(dir) = app.path().app_cache_dir() else { return vec![] };
+    stats::per_book(&dir.join("statistics.sqlite3")).unwrap_or_default().into_iter()
+        .map(|(md5, title, day, secs)| (md5, title, obsidian::Extra {
+            last_read: (!day.is_empty()).then_some(day),
+            read_time: (secs > 0).then(|| fmt_secs(secs)),
+        }))
+        .collect()
+}
+
+fn extra_for(all: &Extras, b: &highlights::Book) -> obsidian::Extra {
+    b.md5.as_ref().and_then(|m| all.iter().find(|(x, _, _)| x == m))
+        .or_else(|| all.iter().find(|(_, t, _)| *t == b.title))
+        .map(|(_, _, x)| x.clone())
+        .unwrap_or_default()
+}
+
+/// Writes or merges one note per book into `vault_dir`; returns the note paths in `books` order.
+fn export(app: &AppHandle, books: &[highlights::Book], with_index: bool) -> Res<(ExportReport, Vec<PathBuf>)> {
+    let dir = PathBuf::from(get_settings(app.clone()).vault_dir);
     std::fs::create_dir_all(&dir).map_err(e)?;
-    for b in &books {
-        std::fs::write(dir.join(highlights::file_name(&b.title)), highlights::markdown(b)).map_err(e)?;
+    let all = extras(app);
+    let mut r = ExportReport { dir: dir.to_string_lossy().into(), ..Default::default() };
+    let mut paths = vec![];
+    let mut rows = vec![];
+    for b in books {
+        let x = extra_for(&all, b);
+        let name = highlights::file_name(&b.title);
+        let p = dir.join(&name);
+        let write = |doc: &str| std::fs::write(&p, doc).map_err(|err| format!("No pude escribir {}: {err}", p.display()));
+        match std::fs::read_to_string(&p) {
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                write(&obsidian::render(b, &x))?;
+                r.created += 1;
+                r.added += b.notes.len();
+            }
+            Err(err) => return Err(format!("No pude leer {}: {err}", p.display())),
+            Ok(old) => match obsidian::merge(&old, b, &x) {
+                obsidian::Merge::Unchanged => {}
+                obsidian::Merge::Updated { doc, added } => {
+                    write(&doc)?;
+                    r.updated += 1;
+                    r.added += added;
+                }
+                obsidian::Merge::Legacy => {
+                    // a note from 0.1.1 has no block ids: keep it next to the new one
+                    let old_p = dir.join(format!("{} (anterior).md", name.trim_end_matches(".md")));
+                    if old_p.exists() { return Err(format!("Ya existe {}; movelo y exportá de nuevo.", old_p.display())); }
+                    std::fs::rename(&p, &old_p).map_err(e)?;
+                    write(&obsidian::render(b, &x))?;
+                    r.legacy += 1;
+                    r.added += b.notes.len();
+                }
+            },
+        }
+        rows.push((name.trim_end_matches(".md").to_string(), b, x));
+        paths.push(p);
     }
-    Ok(books.len())
+    if with_index {
+        std::fs::write(dir.join("Libros.md"), obsidian::index(&rows)).map_err(e)?;
+    }
+    Ok((r, paths))
 }
 
 #[tauri::command]
-fn highlight_markdown(book: highlights::Book) -> String { highlights::markdown(&book) }
+fn highlights_export(app: AppHandle, books: Vec<highlights::Book>) -> Res<ExportReport> {
+    Ok(export(&app, &books, true)?.0)
+}
+
+#[tauri::command]
+fn obsidian_vaults() -> Vec<String> {
+    let json = std::fs::read_to_string(home().join("Library/Application Support/obsidian/obsidian.json")).unwrap_or_default();
+    obsidian::vaults(&json).into_iter().filter(|p| Path::new(p).is_dir()).collect()
+}
+
+/// Creates ~/Documents/KOReader Vault and asks Obsidian to open it, which registers it.
+#[tauri::command]
+fn obsidian_create_vault() -> Res<String> {
+    let v = home().join("Documents/KOReader Vault");
+    std::fs::create_dir_all(v.join(".obsidian")).map_err(e)?;
+    let path = v.to_string_lossy().to_string();
+    std::process::Command::new("open").arg(format!("obsidian://open?path={}", obsidian::url_encode(&path))).spawn().map_err(e)?;
+    Ok(path)
+}
+
+#[derive(Default)]
+struct Enrich { child: Mutex<Option<tokio::process::Child>>, cancel: AtomicBool }
+
+#[derive(Serialize, Clone)]
+struct EnrichEvent { book: String, kind: &'static str, text: String }
+
+/// Exports `books`, then runs `claude -p` on each note, one at a time.
+#[tauri::command]
+async fn enrich_start(app: AppHandle, job: State<'_, Enrich>, books: Vec<highlights::Book>, model: String, today: String,
+                      events: Channel<EnrichEvent>) -> Res<()> {
+    if !obsidian::MODELS.contains(&model.as_str()) { return Err(format!("modelo desconocido: {model}")); }
+    if today.len() != 10 || !today.chars().all(|c| c.is_ascii_digit() || c == '-') { return Err("fecha inválida".into()); }
+    let claude = obsidian::find_claude(&home()).ok_or("No encontré Claude Code. Instalalo con `brew install --cask claude-code`.")?;
+    let (_, paths) = export(&app, &books, false)?;
+    let root = obsidian::vault_root(&PathBuf::from(get_settings(app.clone()).vault_dir));
+    let git = root.join(".git").exists();
+    job.cancel.store(false, SeqCst);
+    let send = |book: &str, kind, text: String| { let _ = events.send(EnrichEvent { book: book.into(), kind, text }); };
+    for (b, p) in books.iter().zip(&paths) {
+        if job.cancel.load(SeqCst) { break; }
+        send(&b.title, "start", String::new());
+        if !git { let _ = std::fs::copy(p, p.with_extension("md.kob.bak")); }
+        match enrich_one(&claude, &root, p, &model, &job, |t| send(&b.title, "tool", t)).await {
+            Ok(()) => {
+                let doc = std::fs::read_to_string(p).map_err(e)?;
+                std::fs::write(p, obsidian::set_fm(&doc, "enriched", &today)).map_err(e)?;
+                send(&b.title, "done", String::new());
+            }
+            Err(err) => send(&b.title, "error", err),
+        }
+    }
+    Ok(())
+}
+
+async fn enrich_one(claude: &Path, root: &Path, note: &Path, model: &str, job: &Enrich, mut tool: impl FnMut(String)) -> Res<()> {
+    let rel = note.strip_prefix(root).unwrap_or(note).to_string_lossy().to_string();
+    let mut child = tokio::process::Command::new(claude)
+        .current_dir(root)
+        .arg("-p").arg(obsidian::prompt(&rel))
+        .args(["--model", model, "--output-format", "stream-json", "--verbose",
+               "--tools", "Read,Glob,Grep,Edit", "--permission-mode", "acceptEdits",
+               "--strict-mcp-config", "--setting-sources", "project", "--no-session-persistence", "--disable-slash-commands"])
+        .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn().map_err(e)?;
+    let out = child.stdout.take().ok_or("sin salida")?;
+    let mut err = child.stderr.take().ok_or("sin salida")?;
+    let stderr = tauri::async_runtime::spawn(async move { let mut s = String::new(); let _ = err.read_to_string(&mut s).await; s });
+    *job.child.lock().await = Some(child);
+    let mut result = None;
+    let mut lines = BufReader::new(out).lines();
+    while let Ok(Some(l)) = lines.next_line().await {
+        match obsidian::event(&l) {
+            Some(obsidian::Event::Tool(t)) => tool(t),
+            Some(obsidian::Event::Done) => result = Some(Ok(())),
+            Some(obsidian::Event::Failed(m)) => result = Some(Err(m)),
+            None => {}
+        }
+    }
+    let child = job.child.lock().await.take();
+    let (Some(mut child), false) = (child, job.cancel.load(SeqCst)) else { return Err("Cancelado".into()) };
+    let status = child.wait().await.map_err(e)?;
+    let stderr = stderr.await.unwrap_or_default();
+    result.unwrap_or_else(|| Err(stderr.trim().lines().last().map(str::to_string).unwrap_or(format!("claude terminó con {status}"))))
+}
+
+#[tauri::command]
+async fn enrich_stop(job: State<'_, Enrich>) -> Res<()> {
+    job.cancel.store(true, SeqCst);
+    if let Some(mut c) = job.child.lock().await.take() { let _ = c.kill().await; }
+    Ok(())
+}
 
 // ---------- 4 & 8. send books / fonts ----------
 
@@ -370,11 +531,12 @@ pub fn run() {
             Ok(())
         })
         .manage(LogTail::default())
+        .manage(Enrich::default())
         .invoke_handler(tauri::generate_handler![
             get_settings, set_settings, status,
             backup_run, backup_list, backup_size, reveal,
             stats,
-            highlights, highlights_export, highlight_markdown,
+            highlights, highlights_export, obsidian_vaults, obsidian_create_vault, enrich_start, enrich_stop,
             send_file, list_dir,
             read_remote, write_remote, rename_remote, delete_remote,
             log_start, log_stop, screen_message,
@@ -416,7 +578,8 @@ mod live {
             println!("{} books with highlights, {} parse errors {:?}", books.len(), errors.len(), errors.first());
             assert!(errors.is_empty());
             let top = books.iter().max_by_key(|b| b.notes.len()).unwrap();
-            println!("most: {} ({})\n{}", top.title, top.notes.len(), &highlights::markdown(top)[..600.min(highlights::markdown(top).len())]);
+            let md = obsidian::render(top, &obsidian::Extra::default());
+            println!("most: {} ({}) md5 {:?}\n{}", top.title, top.notes.len(), top.md5, &md[..md.char_indices().nth(600).map_or(md.len(), |(i, _)| i)]);
 
             let tmp = std::env::temp_dir().join("kob-live-stats.db");
             let cmd = format!("sqlite3 {KO}/settings/statistics.sqlite3 '.backup /tmp/kob-stats.db' && cat /tmp/kob-stats.db; r=$?; rm -f /tmp/kob-stats.db; exit $r");
@@ -483,6 +646,57 @@ mod live {
             assert_eq!(got, 3);
             std::fs::remove_dir_all(&dir).ok();
             println!("writes ok");
+        });
+    }
+
+    /// Real highlights from the app cache into a temp folder, twice: `cargo test export_cache -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn export_cache() {
+        let cache = home().join("Library/Caches/com.danisnowman.kobridge/highlights.json");
+        let set: HighlightSet = serde_json::from_slice(&std::fs::read(cache).expect("cache")).unwrap();
+        let dir = std::env::temp_dir().join("kob-export");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for b in &set.books {
+            let p = dir.join(highlights::file_name(&b.title));
+            let first = obsidian::render(b, &obsidian::Extra::default());
+            assert!(matches!(obsidian::merge(&first, b, &obsidian::Extra::default()), obsidian::Merge::Unchanged), "{}", b.title);
+            let ids = first.lines().filter(|l| l.starts_with("^kob-")).count();
+            let unique: std::collections::HashSet<_> = b.notes.iter().map(obsidian::block_id).collect();
+            assert_eq!(ids, unique.len(), "{}", b.title);
+            std::fs::write(p, first).unwrap();
+        }
+        println!("{} notes, {} highlights in {}", set.books.len(), set.books.iter().map(|b| b.notes.len()).sum::<usize>(), dir.display());
+    }
+
+    /// Needs Claude Code, not the Kindle: `cargo test claude_enrich -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn claude_enrich() {
+        tauri::async_runtime::block_on(async {
+            let v = std::env::temp_dir().join("kob-vault");
+            let _ = std::fs::remove_dir_all(&v);
+            std::fs::create_dir_all(v.join(".obsidian")).unwrap();
+            std::fs::create_dir_all(v.join("KOReader")).unwrap();
+            std::fs::write(v.join("La gracia.md"), "# La gracia\n\nNotas sobre la gracia y el perdón en la teología cristiana.\n").unwrap();
+            let n = |text: &str, dt: &str| highlights::Note { text: text.into(), note: None, chapter: Some("Capítulo 1".into()), page: Some(3), datetime: Some(dt.into()) };
+            let b = highlights::Book { sidecar: String::new(), title: "Libro".into(), authors: "Autora".into(), percent: 0.3, md5: None, notes: vec![
+                n("La gracia no se gana; se recibe como un regalo.", "2026-01-01 10:00:00"),
+                n("El perdón cambia primero al que perdona.", "2026-01-02 10:00:00"),
+            ]};
+            let p = v.join("KOReader/Libro.md");
+            std::fs::write(&p, obsidian::render(&b, &obsidian::Extra::default())).unwrap();
+            let quotes = |d: &str| d.lines().filter(|l| l.starts_with('>') || l.starts_with("^kob-") || l.starts_with("## Cap")).map(str::to_string).collect::<Vec<_>>();
+            let before = quotes(&std::fs::read_to_string(&p).unwrap());
+            let claude = obsidian::find_claude(&home()).expect("claude");
+            let t = std::time::Instant::now();
+            enrich_one(&claude, &v, &p, "haiku", &Enrich::default(), |t| println!("  {t}")).await.expect("enrich");
+            let after = std::fs::read_to_string(&p).unwrap();
+            println!("{:.1} s\n{after}", t.elapsed().as_secs_f64());
+            assert!(after.contains("## Resumen"));
+            assert_eq!(quotes(&after), before, "quotes and block ids untouched");
+            assert!(after.find("## Resumen") < after.find("## Capítulo 1"));
         });
     }
 
