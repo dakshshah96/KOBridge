@@ -18,6 +18,7 @@ export type EnrichEvent = { book: string; kind: 'start' | 'tool' | 'done' | 'err
 export type HighlightSet = { books: HBook[]; errors: string[]; fetched_at: number }
 export type Entry = { name: string; size: number }
 export type Kind = 'books' | 'fonts' | 'patches'
+export type SshInfo = { key_path: string; public_key: string | null; config_path: string; has_host: boolean; hostname: string; port: string; user: string; identity: string; usb: string | null }
 
 export const api = {
   status: () => invoke<Status>('status'),
@@ -61,6 +62,12 @@ export const api = {
   },
   logStop: () => invoke<void>('log_stop'),
   screenMessage: (text: string) => invoke<void>('screen_message', { text }),
+  sshSetupInfo: () => invoke<SshInfo>('ssh_setup_info'),
+  sshCreateKey: () => invoke<void>('ssh_create_key'),
+  sshAddHost: (ip: string, port: number) => invoke<void>('ssh_add_host', { ip, port }),
+  sshInstallUsb: () => invoke<string>('ssh_install_usb'),
+  sshTest: () => invoke<string>('ssh_test'),
+  openSshConfig: () => invoke<void>('open_ssh_config'),
 }
 
 export const fmtBytes = (n: number) =>

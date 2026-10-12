@@ -2,6 +2,7 @@ mod anki;
 mod highlights;
 mod lua;
 mod obsidian;
+mod setup;
 mod ssh;
 mod stats;
 
@@ -208,7 +209,17 @@ fn backup_list(app: AppHandle) -> Vec<BackupFile> {
 
 #[tauri::command]
 fn reveal(path: String) -> Res<()> {
-    std::process::Command::new("open").arg("-R").arg(path).spawn().map_err(e).map(|_| ())
+    if cfg!(target_os = "macos") { return open_with(&["-R", &path]); }
+    // xdg-open can't select a file, so open its folder
+    let p = Path::new(&path);
+    let dir = if p.is_dir() { p } else { p.parent().unwrap_or(p) };
+    open_with(&[&dir.to_string_lossy()])
+}
+
+/// `open` on macOS, `xdg-open` on Linux.
+fn open_with(args: &[&str]) -> Res<()> {
+    let cmd = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+    std::process::Command::new(cmd).args(args).spawn().map_err(e).map(|_| ())
 }
 
 // ---------- 2. reading stats ----------
@@ -329,7 +340,8 @@ fn highlights_export(app: AppHandle, books: Vec<highlights::Book>) -> Res<Export
 
 #[tauri::command]
 fn obsidian_vaults() -> Vec<String> {
-    let json = std::fs::read_to_string(home().join("Library/Application Support/obsidian/obsidian.json")).unwrap_or_default();
+    let rel = if cfg!(target_os = "macos") { "Library/Application Support/obsidian/obsidian.json" } else { ".config/obsidian/obsidian.json" };
+    let json = std::fs::read_to_string(home().join(rel)).unwrap_or_default();
     obsidian::vaults(&json).into_iter().filter(|p| Path::new(p).is_dir()).collect()
 }
 
@@ -339,7 +351,7 @@ fn obsidian_create_vault() -> Res<String> {
     let v = home().join("Documents/KOReader Vault");
     std::fs::create_dir_all(v.join(".obsidian")).map_err(e)?;
     let path = v.to_string_lossy().to_string();
-    std::process::Command::new("open").arg(format!("obsidian://open?path={}", obsidian::url_encode(&path))).spawn().map_err(e)?;
+    open_with(&[&format!("obsidian://open?path={}", obsidian::url_encode(&path))])?;
     Ok(path)
 }
 
@@ -468,8 +480,46 @@ async fn anki_one(claude: &Path, cwd: &Path, b: &highlights::Book, model: &str, 
 /// Opens the file in Anki, which shows its import dialog.
 #[tauri::command]
 fn anki_open(path: String) -> Res<()> {
-    let ok = std::process::Command::new("open").args(["-a", "Anki", &path]).status().map_err(e)?.success();
+    let ok = if cfg!(target_os = "macos") {
+        std::process::Command::new("open").args(["-a", "Anki", &path]).status().map_err(e)?.success()
+    } else {
+        // Anki on Linux imports a file passed on its command line
+        std::process::Command::new("anki").arg(&path).spawn().is_ok()
+    };
     if ok { Ok(()) } else { Err(tr("Anki isn't installed. Get it from apps.ankiweb.net and open it once to create your profile.", "No encontré Anki. Instalalo desde apps.ankiweb.net y abrilo una vez para crear tu perfil.")) }
+}
+
+// ---------- SSH setup (Settings view) ----------
+
+#[tauri::command]
+async fn ssh_setup_info() -> setup::Info { setup::info(&home()).await }
+
+#[tauri::command]
+async fn ssh_create_key() -> Res<()> { setup::create_key(&home()).await }
+
+#[tauri::command]
+fn ssh_add_host(ip: String, port: u16) -> Res<()> {
+    setup::add_host(&home(), &ip, port)?;
+    ssh::set_target(None);
+    Ok(())
+}
+
+#[tauri::command]
+fn ssh_install_usb() -> Res<String> { setup::install_usb(&home()) }
+
+#[tauri::command]
+async fn ssh_test() -> Res<String> {
+    let v = setup::test().await?;
+    ssh::set_target(None);
+    Ok(v)
+}
+
+#[tauri::command]
+fn open_ssh_config() -> Res<()> {
+    let p = home().join(".ssh/config");
+    if !p.exists() { return Err(tr("~/.ssh/config doesn't exist yet. Add the Kindle first.", "~/.ssh/config todavía no existe. Primero agregá la Kindle.")); }
+    let p = p.to_string_lossy().to_string();
+    if cfg!(target_os = "macos") { open_with(&["-t", &p]) } else { open_with(&[&p]) }
 }
 
 #[tauri::command]
@@ -607,6 +657,7 @@ pub fn run() {
             backup_run, backup_list, backup_size, reveal,
             stats,
             highlights, highlights_export, obsidian_vaults, obsidian_create_vault, enrich_start, enrich_stop, anki_start, anki_open,
+            ssh_setup_info, ssh_create_key, ssh_add_host, ssh_install_usb, ssh_test, open_ssh_config,
             send_file, list_dir,
             read_remote, write_remote, rename_remote, delete_remote,
             log_start, log_stop, screen_message,

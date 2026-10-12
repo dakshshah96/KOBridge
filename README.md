@@ -5,8 +5,8 @@
 <h1 align="center">KOBridge</h1>
 
 <p align="center">
-  A macOS app that manages KOReader on a jailbroken Kindle over Wi-Fi, using SSH instead of a USB cable.<br>
-  Back up the Kindle, read your statistics, export highlights to Obsidian and Anki, and send books from your Mac.
+  A macOS and Linux app that manages KOReader on a jailbroken Kindle over Wi-Fi, using SSH instead of a USB cable.<br>
+  Back up the Kindle, read your statistics, export highlights to Obsidian and Anki, and send books from your computer.
 </p>
 
 <p align="center">
@@ -21,7 +21,7 @@
 <p align="center">
   <a href="https://github.com/danihrndzld/KOBridge/releases/latest"><img src="https://img.shields.io/github/v/release/danihrndzld/KOBridge?label=release&color=1c1c1c" alt="Latest release"></a>
   <a href="https://github.com/danihrndzld/KOBridge/releases"><img src="https://img.shields.io/github/downloads/danihrndzld/KOBridge/total?color=1c1c1c" alt="Downloads"></a>
-  <a href="#what-you-need"><img src="https://img.shields.io/badge/macOS-Apple%20Silicon-black" alt="macOS on Apple Silicon"></a>
+  <a href="#what-you-need"><img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-black" alt="macOS and Linux"></a>
   <a href="https://tauri.app"><img src="https://img.shields.io/badge/built%20with-Tauri%202-24c8db" alt="Built with Tauri 2"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-PolyForm%20Noncommercial-blue" alt="License PolyForm Noncommercial 1.0.0"></a>
 </p>
@@ -33,7 +33,7 @@
   <img src="docs/assets/readme/patches.png" width="400" alt="User patches editor with a Lua patch open and switches to turn patches on and off">
 </p>
 
-KOBridge is a desktop app for people who read with [KOReader](https://koreader.rocks) on a Kindle and keep their notes on a Mac. It connects to the SSH server built into KOReader, so you can back up the device, see your reading statistics, export highlights, send ebooks and fonts, and edit KOReader settings without plugging in a cable. The app is built with Tauri 2, Svelte 5 and Rust, and it takes about 6 MB on disk. The interface is in English and Spanish, and you switch between them at the bottom of the sidebar.
+KOBridge is a desktop app for people who read with [KOReader](https://koreader.rocks) on a Kindle and keep their notes on a Mac or a Linux computer. It connects to the SSH server built into KOReader, so you can back up the device, see your reading statistics, export highlights, send ebooks and fonts, and edit KOReader settings without plugging in a cable. The app is built with Tauri 2, Svelte 5 and Rust, and it takes about 6 MB on disk. The interface is in English and Spanish, and you switch between them in Settings (⌘, on a Mac, Ctrl+, on Linux).
 
 ## Everything it does
 
@@ -65,6 +65,8 @@ KOBridge is a desktop app for people who read with [KOReader](https://koreader.r
 
 ## Install
 
+### macOS
+
 First, download the `.dmg` from the [latest release](https://github.com/danihrndzld/KOBridge/releases/latest) and drag KOBridge into Applications.
 
 Second, open the app. KOBridge isn't signed with an Apple Developer ID, so macOS blocks it the first time. Right-click KOBridge in Applications and choose Open, or remove the quarantine flag in Terminal:
@@ -77,9 +79,23 @@ Third, when macOS asks whether KOBridge can find devices on your local network, 
 
 The sidebar shows whether the app found the Kindle, its IP address, the battery level and the free space. If it can't find the Kindle, open Details to see the SSH error.
 
+### Linux
+
+The [latest release](https://github.com/danihrndzld/KOBridge/releases/latest) has a `.deb` for Debian and Ubuntu, and an `.AppImage` for other distributions. Both are built for x86_64 on Ubuntu 22.04.
+
+```sh
+sudo apt install ./KOBridge_*_amd64.deb
+# or
+chmod +x KOBridge_*_amd64.AppImage && ./KOBridge_*_amd64.AppImage
+```
+
+The app needs the `ssh` and `ssh-keygen` commands in `/usr/bin`, which come with the `openssh-client` package.
+
 ## Set up the Kindle
 
-KOBridge stores no IP addresses or passwords. It runs the `ssh` command of your Mac with the host name `kindle`, so the whole connection lives in `~/.ssh/config`. You do these steps once.
+KOBridge stores no IP addresses or passwords. It runs the `ssh` command of your computer with the host name `kindle`, so the whole connection lives in `~/.ssh/config`. You do these steps once.
+
+The Settings view (⌘, or Ctrl+,) walks you through the same steps. It can create the key, copy it to a Kindle connected over USB, add the `kindle` entry to `~/.ssh/config`, and test the first connection. The sections below explain what each step does, if you prefer to do it by hand.
 
 ### 1. Start the SSH server in KOReader
 
@@ -89,7 +105,7 @@ Network info in the same menu shows the IP address of the Kindle. Write it down 
 
 ### 2. Create an SSH key and copy it to the Kindle
 
-KOReader accepts public keys in `koreader/settings/SSH/authorized_keys` on the Kindle. Create a key just for the Kindle on your Mac:
+KOReader accepts public keys in `koreader/settings/SSH/authorized_keys` on the Kindle. Create a key just for the Kindle on your computer:
 
 ```sh
 ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519_kindle -C kindle
@@ -128,7 +144,7 @@ Host kindle
   IdentitiesOnly yes
 ```
 
-SSH tries the addresses in order and uses the first one with port 2222 open. `HostKeyAlias kindle` makes SSH keep one fingerprint for every address, so it doesn't ask again each time you change networks.
+SSH tries the addresses in order and uses the first one with port 2222 open. On Linux, replace `nc -z -G 1` with `nc -z -w 1`. `HostKeyAlias kindle` makes SSH keep one fingerprint for every address, so it doesn't ask again each time you change networks.
 
 ### 4. Test the connection
 
@@ -154,7 +170,7 @@ When Claude edits a note, the app runs `claude -p` inside your vault with only t
 
 ## What you need
 
-- A Mac with Apple Silicon. The release only ships the `aarch64` build, but you can build the app for Intel from source.
+- A Mac with Apple Silicon, or a Linux computer with x86_64. The release has no Intel Mac build, but you can build one from source.
 - A jailbroken Kindle with KOReader installed. Follow the [KOReader installation guide for Kindle](https://github.com/koreader/koreader/wiki/Installation-on-Kindle-devices) if you don't have it yet. KOBridge was tested with KOReader v2026.07.1 on Kindle firmware 5.18.5.
 - [Claude Code](https://claude.com/claude-code), signed in, for summaries and Anki cards. Everything else works without it.
 - [Anki](https://apps.ankiweb.net) to import the flashcards.
@@ -179,7 +195,7 @@ The message that `fbink` writes stays on screen until KOReader redraws the page.
 
 ## Build it yourself
 
-You need Rust, [Bun](https://bun.sh) and the Xcode Command Line Tools.
+You need Rust and [Bun](https://bun.sh). On macOS you also need the Xcode Command Line Tools. On Linux you need the WebKitGTK libraries that Tauri lists in its [prerequisites](https://v2.tauri.app/start/prerequisites/#linux), and `.github/workflows/linux.yml` shows the exact `apt` packages.
 
 ```sh
 git clone https://github.com/danihrndzld/KOBridge.git

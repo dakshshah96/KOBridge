@@ -76,7 +76,9 @@ fn parse_g(text: &str) -> Res<Option<Vec<String>>> {
         // keep the known_hosts entry the alias would have used
         args.extend(["-o".into(), format!("HostKeyAlias={host}")]);
     }
-    args.extend(["-o".into(), "UseKeychain=yes".into(), host]);
+    // UseKeychain only exists in Apple's ssh; Linux ssh rejects the whole command
+    if cfg!(target_os = "macos") { args.extend(["-o".into(), "UseKeychain=yes".into()]); }
+    args.push(host);
     Ok(Some(args))
 }
 
@@ -194,9 +196,10 @@ mod tests {
                  identityfile ~/.ssh/id_ed25519_kindle\nuserknownhostsfile /a /b\nproxycommand none\n";
         let t = parse_g(g).unwrap().unwrap();
         assert_eq!(t.last().unwrap(), "192.168.0.38");
-        for a in ["2222", "root", "~/.ssh/id_ed25519_kindle", "HostKeyAlias=kindle", "userknownhostsfile=/a /b", "UseKeychain=yes"] {
+        for a in ["2222", "root", "~/.ssh/id_ed25519_kindle", "HostKeyAlias=kindle", "userknownhostsfile=/a /b"] {
             assert!(t.iter().any(|x| x == a), "missing {a}");
         }
+        assert_eq!(t.iter().any(|x| x == "UseKeychain=yes"), cfg!(target_os = "macos"));
         // no alias in config: pin known_hosts to the IP the alias would have used
         let t = parse_g("hostname 10.0.0.5\nport 22\n").unwrap().unwrap();
         assert!(t.iter().any(|x| x == "HostKeyAlias=10.0.0.5"));

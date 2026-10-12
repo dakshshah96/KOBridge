@@ -140,7 +140,8 @@ pub fn vault_root(dir: &Path) -> PathBuf {
 pub fn find_claude(home: &Path) -> Option<PathBuf> {
     let known = [PathBuf::from("/opt/homebrew/bin/claude"), PathBuf::from("/usr/local/bin/claude"), home.join(".local/bin/claude")];
     known.into_iter().find(|p| p.is_file()).or_else(|| {
-        let out = std::process::Command::new("/bin/zsh").args(["-lc", "command -v claude"]).output().ok()?;
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+        let out = std::process::Command::new(shell).args(["-lc", "command -v claude"]).output().ok()?;
         let p = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
         p.is_file().then_some(p)
     })
