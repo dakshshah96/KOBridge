@@ -71,7 +71,7 @@
               <title>{dayLabel(d.date)}: {Math.round(d.minutes)} min</title>
             </rect>
           {/if}
-          {#if i % 7 === 0 || i === stats.daily.length - 1}
+          {#if (stats.daily.length - 1 - i) % 7 === 0}
             <text x={LEFT + i * step + 2} y={BASE + 17}>{i === stats.daily.length - 1 ? 'hoy' : dayLabel(d.date)}</text>
           {/if}
         {/each}

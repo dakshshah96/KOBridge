@@ -63,7 +63,7 @@
       {:else if app.status}
         <b><span class="dot"></span>Kindle conectada</b>
         <span>{app.status.host}</span>
-        <span>{#if app.status.battery !== null}Batería {app.status.battery} % · {/if}{gb(app.status.free_kb)} GB libres</span>
+        <span>{#if app.status.battery !== null}Batería {app.status.battery} %{' · '}{/if}{gb(app.status.free_kb)} GB libres</span>
       {:else}
         <b><span class="dot off"></span>Kindle sin conexión</b>
         <span>{app.offlineHint}</span>
