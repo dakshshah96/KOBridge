@@ -195,8 +195,9 @@ fn file_info(p: &Path) -> Option<BackupFile> {
     })
 }
 
+// commands that touch the disk or spawn processes are async, so they run off the main (UI) thread
 #[tauri::command]
-fn backup_list(app: AppHandle) -> Vec<BackupFile> {
+async fn backup_list(app: AppHandle) -> Vec<BackupFile> {
     let dir = PathBuf::from(get_settings(app).backup_dir);
     let mut v: Vec<BackupFile> = std::fs::read_dir(dir).into_iter().flatten().flatten()
         .map(|d| d.path())
@@ -334,7 +335,7 @@ fn export(app: &AppHandle, books: &[highlights::Book], with_index: bool) -> Res<
 }
 
 #[tauri::command]
-fn highlights_export(app: AppHandle, books: Vec<highlights::Book>) -> Res<ExportReport> {
+async fn highlights_export(app: AppHandle, books: Vec<highlights::Book>) -> Res<ExportReport> {
     Ok(export(&app, &books, true)?.0)
 }
 
@@ -479,9 +480,9 @@ async fn anki_one(claude: &Path, cwd: &Path, b: &highlights::Book, model: &str, 
 
 /// Opens the file in Anki, which shows its import dialog.
 #[tauri::command]
-fn anki_open(path: String) -> Res<()> {
+async fn anki_open(path: String) -> Res<()> {
     let ok = if cfg!(target_os = "macos") {
-        std::process::Command::new("open").args(["-a", "Anki", &path]).status().map_err(e)?.success()
+        tokio::process::Command::new("open").args(["-a", "Anki", &path]).status().await.map_err(e)?.success()
     } else {
         // Anki on Linux imports a file passed on its command line
         std::process::Command::new("anki").arg(&path).spawn().is_ok()
@@ -505,7 +506,7 @@ fn ssh_add_host(ip: String, port: u16) -> Res<()> {
 }
 
 #[tauri::command]
-fn ssh_install_usb() -> Res<String> { setup::install_usb(&home()) }
+async fn ssh_install_usb() -> Res<String> { setup::install_usb(&home()) }
 
 #[tauri::command]
 async fn ssh_test() -> Res<String> {

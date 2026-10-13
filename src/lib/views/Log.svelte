@@ -5,14 +5,17 @@
   import { t } from '../i18n.svelte'
 
   const MAX = 2000
-  let lines = $state<string[]>([])
+  type Line = { id: number; text: string; cls: string }
+  // raw + keyed: a new batch adds and drops rows instead of rewriting all 2000
+  let lines = $state.raw<Line[]>([])
+  let seq = 0
   let following = $state(false)
   let filter = $state('')
   let error = $state('')
   let box: HTMLPreElement
   let stick = true
 
-  let pending: string[] = []
+  let pending: Line[] = []
   let frame = 0
   async function flush() {
     frame = 0
@@ -27,7 +30,7 @@
     lines = []
     try {
       await api.logStart((l) => {
-        pending.push(l)
+        pending.push({ id: seq++, text: l, cls: level(l) })
         frame ||= requestAnimationFrame(flush)
       })
       following = true
@@ -40,7 +43,7 @@
   $effect(() => { if (app.status && !started) { started = true; start() } })
   onDestroy(() => { cancelAnimationFrame(frame); api.logStop() })
 
-  const shown = $derived(filter ? lines.filter((l) => l.toLowerCase().includes(filter.toLowerCase())) : lines)
+  const shown = $derived(filter ? lines.filter((l) => l.text.toLowerCase().includes(filter.toLowerCase())) : lines)
   const level = (l: string) => (/ (ERROR|FATAL)\b|stack traceback/.test(l) ? 'err' : / WARN\b/.test(l) ? 'warn' : '')
 
   let msg = $state('')
@@ -67,7 +70,7 @@
   {#if error}<div class="banner bad">{error}</div>{/if}
 
   <div class="field"><input bind:value={filter} placeholder={t('Filter, e.g. Storefront or ERROR', 'Filtrar, por ejemplo: Storefront o ERROR')} aria-label={t('Filter the log', 'Filtrar el registro')} spellcheck="false" /></div>
-  <pre class="log num selectable" bind:this={box} onscroll={() => (stick = box.scrollTop + box.clientHeight >= box.scrollHeight - 8)}>{#each shown as l}<span class={level(l)}>{l}</span>
+  <pre class="log num selectable" bind:this={box} onscroll={() => (stick = box.scrollTop + box.clientHeight >= box.scrollHeight - 8)}>{#each shown as l (l.id)}<span class={l.cls}>{l.text}</span>
 {/each}</pre>
 
   <div>
