@@ -1,10 +1,12 @@
 mod anki;
+mod aria;
 mod highlights;
 mod lua;
 mod obsidian;
 mod setup;
 mod ssh;
 mod stats;
+mod store;
 
 use serde::{Deserialize, Serialize};
 use ssh::{sq, tr, Res};
@@ -142,19 +144,25 @@ struct BackupFile { name: String, path: String, size: u64, modified: u64 }
 
 #[tauri::command]
 async fn backup_run(app: AppHandle, stamp: String, progress: Channel<u64>) -> Res<BackupFile> {
+    backup_to(app, &stamp, &[], |n| { let _ = progress.send(n); }).await
+}
+
+/// `extra`: more paths under /mnt/us to include, e.g. the plugin folder the Store is about to replace.
+async fn backup_to(app: AppHandle, stamp: &str, extra: &[String], on: impl FnMut(u64)) -> Res<BackupFile> {
     if !stamp.chars().all(|c| c.is_ascii_digit() || c == '-') { return Err("stamp inválido".into()); }
     let s = get_settings(app);
     let dir = PathBuf::from(&s.backup_dir);
     std::fs::create_dir_all(&dir).map_err(e)?;
-    let cmd = format!("{} && tar -cf - -T /tmp/kob-list; r=$?; rm -f /tmp/kob-list; exit $r", backup_list_cmd(s.backup_books));
+    let cmd = format!("{} && tar -cf - -T /tmp/kob-list; r=$?; rm -f /tmp/kob-list; exit $r", backup_list_cmd(s.backup_books, extra));
     let dest = dir.join(format!("kindle-{stamp}.tar"));
-    ssh::pull_to_file(&cmd, &dest, |n| { let _ = progress.send(n); }).await?;
+    ssh::pull_to_file(&cmd, &dest, on).await?;
     Ok(file_info(&dest).ok_or(tr("couldn't read the backup", "no se pudo leer el respaldo"))?)
 }
 
 /// Shell that writes the backup's path list to /tmp/kob-list, run from /mnt/us.
-fn backup_list_cmd(books: bool) -> String {
-    let (sdr_roots, extra) = if books { ("documents", "books") } else { ("books documents", "") };
+fn backup_list_cmd(books: bool, more: &[String]) -> String {
+    let (sdr_roots, books_dir) = if books { ("documents", "books") } else { ("books documents", "") };
+    let extra = format!("{books_dir} {}", more.iter().map(|p| sq(p)).collect::<Vec<_>>().join(" "));
     format!(
         "cd /mnt/us && {{ for p in koreader/settings koreader/settings.reader.lua koreader/history.lua \
          koreader/defaults.custom.lua koreader/patches koreader/styletweaks {extra}; do [ -e \"$p\" ] && echo \"$p\"; done; \
@@ -170,7 +178,7 @@ async fn backup_size() -> Res<BackupSize> {
     let du = "tr '\\n' '\\000' < /tmp/kob-list | xargs -0 du -sk | awk '{s+=$1} END {print s+0}'";
     let out = ssh::run(&format!(
         "{base} && {du} && {full} && {du} && du -sk /mnt/us/books | cut -f1 && find /mnt/us/books -type f | wc -l; rm -f /tmp/kob-list",
-        base = backup_list_cmd(false), full = backup_list_cmd(true))).await?;
+        base = backup_list_cmd(false, &[]), full = backup_list_cmd(true, &[]))).await?;
     let n: Vec<u64> = out.split_whitespace().filter_map(|v| v.parse().ok()).collect();
     let [base_kb, full_kb, books_kb, books_files] = n[..] else { return Err(tr(format!("unexpected du output: {out}"), format!("respuesta inesperada de du: {out}"))) };
 
@@ -215,6 +223,13 @@ fn reveal(path: String) -> Res<()> {
     let p = Path::new(&path);
     let dir = if p.is_dir() { p } else { p.parent().unwrap_or(p) };
     open_with(&[&dir.to_string_lossy()])
+}
+
+/// A catalog item's GitHub page in the browser.
+#[tauri::command]
+fn open_url(url: String) -> Res<()> {
+    if !url.starts_with("https://github.com/") { return Err(format!("url not allowed: {url}")); }
+    open_with(&[&url])
 }
 
 /// `open` on macOS, `xdg-open` on Linux.
@@ -609,6 +624,90 @@ async fn delete_remote(path: String) -> Res<()> {
     ssh::run(&format!("rm -f {}", sq(&path))).await.map(|_| ())
 }
 
+// ---------- 9. store (Storefront catalog) ----------
+
+static STORE_BUSY: AtomicBool = AtomicBool::new(false);
+
+/// The catalog, from the cache when it was checked less than an hour ago or the download fails.
+#[tauri::command]
+async fn store_catalog(app: AppHandle, refresh: bool) -> Res<serde_json::Value> {
+    let dir = app.path().app_cache_dir().map_err(e)?.join("store");
+    let (file, checked) = (dir.join("catalog.json"), dir.join("catalog.checked"));
+    let age = std::fs::metadata(&checked).and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok());
+    let mut offline = None;
+    if refresh || !file.exists() || age.is_none_or(|a| a.as_secs() > 3600) {
+        // a cut download never replaces the copy the offline fallback reads
+        let fresh = aria::download(store::CATALOG_URL, &dir, "catalog.new.json", |_, _| {}).await.and_then(|p| {
+            serde_json::from_slice::<serde_json::Value>(&std::fs::read(&p).map_err(e)?).map_err(e)?;
+            std::fs::rename(&p, &file).map_err(e)
+        });
+        match fresh {
+            Ok(()) => { let _ = std::fs::write(&checked, b""); }
+            Err(err) if file.exists() => offline = Some(err),
+            Err(err) => return Err(err),
+        }
+    }
+    let c: serde_json::Value = serde_json::from_slice(&std::fs::read(&file).map_err(e)?).map_err(e)?;
+    let mut v = store::slim(&c);
+    v["offline"] = offline.into();
+    Ok(v)
+}
+
+fn cached_catalog(app: &AppHandle) -> Res<serde_json::Value> {
+    let p = app.path().app_cache_dir().map_err(e)?.join("store/catalog.json");
+    serde_json::from_slice(&std::fs::read(p).map_err(|_| tr("Open the Store once to download the catalog.", "Abrí la Tienda una vez para bajar el catálogo."))?).map_err(e)
+}
+
+#[derive(Serialize)]
+struct StoreState { items: Vec<store::Owned>, registry_error: Option<String> }
+
+#[tauri::command]
+async fn store_installed(app: AppHandle) -> Res<StoreState> {
+    let c = cached_catalog(&app)?;
+    let r = store::parse_list(&ssh::run(store::LIST_CMD).await?);
+    Ok(StoreState { items: store::owned(&c, &r), registry_error: r.registry.as_ref().err().cloned() })
+}
+
+/// Clears STORE_BUSY when the operation ends, however it ends.
+struct Busy;
+impl Drop for Busy { fn drop(&mut self) { STORE_BUSY.store(false, SeqCst); } }
+
+async fn store_guard() -> Res<Busy> {
+    if STORE_BUSY.swap(true, SeqCst) { return Err(tr("Another store operation is running.", "Ya hay otra operación de la tienda en curso.")); }
+    let busy = Busy;
+    if reader_running().await? {
+        return Err(tr("KOReader is open, and it would overwrite Storefront's list of installs when it exits. Close it on the Kindle and try again.",
+                      "KOReader está abierto y sobrescribiría la lista de instalaciones de Storefront al cerrar. Cerralo en la Kindle y volvé a intentar."));
+    }
+    Ok(busy)
+}
+
+/// Full backup, then install or update one catalog item.
+#[tauri::command]
+async fn store_install(app: AppHandle, kind: String, id: String, stamp: String, progress: Channel<store::Step>) -> Res<()> {
+    let _busy = store_guard().await?;
+    let c = cached_catalog(&app)?;
+    let extra = store::targets(&c, &kind, &id, &store::remote_registry().await.unwrap_or_default());
+    backup_to(app.clone(), &stamp, &extra, |n| { let _ = progress.send(store::Step { step: "backup", done: n, total: 0 }); }).await?;
+    let work = app.path().app_cache_dir().map_err(e)?.join("store/work");
+    store::install(&c, &kind, &id, &work, |s| { let _ = progress.send(s); }).await?;
+    let _ = progress.send(store::Step { step: "done", done: 0, total: 0 });
+    Ok(())
+}
+
+/// Full backup, then remove one item that a store installed.
+#[tauri::command]
+async fn store_uninstall(app: AppHandle, kind: String, id: String, stamp: String, progress: Channel<store::Step>) -> Res<()> {
+    let _busy = store_guard().await?;
+    let c = cached_catalog(&app).unwrap_or_default();
+    let extra = store::targets(&c, &kind, &id, &store::remote_registry().await?);
+    backup_to(app, &stamp, &extra, |n| { let _ = progress.send(store::Step { step: "backup", done: n, total: 0 }); }).await?;
+    let _ = progress.send(store::Step { step: "send", done: 0, total: 0 });
+    store::uninstall(&kind, &id).await?;
+    let _ = progress.send(store::Step { step: "done", done: 0, total: 0 });
+    Ok(())
+}
+
 // ---------- 7. live log + screen message ----------
 
 #[derive(Default)]
@@ -655,13 +754,14 @@ pub fn run() {
         .manage(Enrich::default())
         .invoke_handler(tauri::generate_handler![
             get_settings, set_settings, status,
-            backup_run, backup_list, backup_size, reveal,
+            backup_run, backup_list, backup_size, reveal, open_url,
             stats,
             highlights, highlights_export, obsidian_vaults, obsidian_create_vault, enrich_start, enrich_stop, anki_start, anki_open,
             ssh_setup_info, ssh_create_key, ssh_add_host, ssh_install_usb, ssh_test, open_ssh_config,
             send_file, list_dir,
             read_remote, write_remote, rename_remote, delete_remote,
             log_start, log_stop, screen_message,
+            store_catalog, store_installed, store_install, store_uninstall,
         ])
         .run(tauri::generate_context!())
         .expect("error while running KOBridge");

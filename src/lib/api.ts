@@ -18,6 +18,12 @@ export type EnrichEvent = { book: string; kind: 'start' | 'tool' | 'done' | 'err
 export type HighlightSet = { books: HBook[]; errors: string[]; fetched_at: number }
 export type Entry = { name: string; size: number }
 export type Kind = 'books' | 'fonts' | 'patches'
+export type StoreKind = 'plugin' | 'patch' | 'font'
+export type StoreItem = { id: string; name: string; owner: string; description: string; stars: number; pushed_at: string; url: string; version?: string; repo?: string; category?: string }
+export type Catalog = { generated_at: string; offline: string | null; plugins: StoreItem[]; patches: StoreItem[]; fonts: StoreItem[] }
+export type Owned = { kind: StoreKind; id: string; version: string; update: boolean; removable: boolean }
+export type StoreState = { items: Owned[]; registry_error: string | null }
+export type StoreStep = { step: 'backup' | 'download' | 'send' | 'done'; done: number; total: number }
 export type SshInfo = { key_path: string; public_key: string | null; config_path: string; has_host: boolean; hostname: string; port: string; user: string; identity: string; usb: string | null }
 
 export const api = {
@@ -32,6 +38,7 @@ export const api = {
   backupSize: () => invoke<BackupSize>('backup_size'),
   backupList: () => invoke<BackupFile[]>('backup_list'),
   reveal: (path: string) => invoke<void>('reveal', { path }),
+  openUrl: (url: string) => invoke<void>('open_url', { url }),
   stats: (refresh: boolean) => invoke<Stats | null>('stats', { refresh }),
   highlights: (refresh: boolean) => invoke<HighlightSet>('highlights', { refresh }),
   highlightsExport: (books: HBook[]) => invoke<ExportReport>('highlights_export', { books }),
@@ -68,6 +75,13 @@ export const api = {
   sshInstallUsb: () => invoke<string>('ssh_install_usb'),
   sshTest: () => invoke<string>('ssh_test'),
   openSshConfig: () => invoke<void>('open_ssh_config'),
+  storeCatalog: (refresh: boolean) => invoke<Catalog>('store_catalog', { refresh }),
+  storeInstalled: () => invoke<StoreState>('store_installed'),
+  storeRun: (op: 'install' | 'uninstall', kind: StoreKind, id: string, stamp: string, onStep: (s: StoreStep) => void) => {
+    const progress = new Channel<StoreStep>()
+    progress.onmessage = onStep
+    return invoke<void>(`store_${op}`, { kind, id, stamp, progress })
+  },
 }
 
 export const fmtBytes = (n: number) =>

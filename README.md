@@ -63,6 +63,12 @@ KOBridge is a desktop app for people who read with [KOReader](https://koreader.r
 - **Settings files.** Edit `defaults.custom.lua` and `settings.reader.lua`. The app only saves `settings.reader.lua` while KOReader is closed, because KOReader overwrites that file when it exits.
 - **Live log.** Follow `crash.log` as KOReader writes it, filter it, and show a message on the Kindle screen with `fbink`.
 
+### Store
+
+- **Storefront catalog.** The Store view lists the plugins, user patches and fonts from the [Storefront](https://github.com/ultimatejimmy/storefront.koplugin) catalog, with search and sorting by stars or by last update. It keeps a copy of the catalog, so the list opens without internet.
+- **Install, update and remove.** The app downloads with [aria2](https://aria2.github.io), checks that a plugin has `_meta.lua` and `main.lua`, and sends it over SSH into a new folder that replaces the old one only when the copy finished. It records each install in `Storefront_installs.lua`, the same list Storefront keeps, so Storefront on the Kindle sees the same installs and updates.
+- **A backup first.** Every install, update or removal starts with a full backup, which shows up in the Backup view. The app only changes plugins while KOReader is closed, because KOReader rewrites Storefront's list when it exits.
+
 ## Install
 
 ### macOS
@@ -214,6 +220,8 @@ cargo test                              # tests that don't need the Kindle
 cargo test -- --ignored --nocapture     # tests against a real Kindle and Claude Code
 ```
 
+The app runs `aria2c` from your `PATH` when you have one, and otherwise the copy inside the app. `bunx tauri dev` and `bunx tauri build` need that copy, so build it once with `./scripts/build-aria2.sh`, which compiles aria2 1.37.0 into `src-tauri/binaries/`.
+
 The `--ignored` tests use your Kindle over SSH. They create test files in `/tmp` and in `koreader/patches` on the Kindle, and they delete them when they finish.
 
 ## License
@@ -221,3 +229,5 @@ The `--ignored` tests use your Kindle over SSH. They create test files in `/tmp`
 KOBridge uses the [PolyForm Noncommercial License 1.0.0](LICENSE). You can read, change and share the source code, and you can use the app for any purpose that isn't commercial, e.g., personal reading, study, hobby projects, schools and charities. Selling the app or using it inside a commercial product needs separate permission, so open an issue if you want to ask.
 
 Copyright 2026 Daniel Hernández.
+
+The app bundles an unmodified build of [aria2 1.37.0](https://github.com/aria2/aria2/tree/release-1.37.0), which is licensed under the GPL 2.0 or later. Its license is in `licenses/aria2-COPYING` inside the app, and `scripts/build-aria2.sh` shows how it is built from the release source.
