@@ -128,7 +128,10 @@ pub async fn test() -> Res<String> {
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
     } else {
-        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+        let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        // with `Match originalhost kindle exec ...` entries, every probe failing leaves the alias unresolved
+        let config = std::fs::read_to_string(crate::home().join(".ssh/config")).unwrap_or_default();
+        if err.contains("Could not resolve hostname") && names_kindle(&config) { Err(crate::ssh::unreachable()) } else { Err(err) }
     }
 }
 
